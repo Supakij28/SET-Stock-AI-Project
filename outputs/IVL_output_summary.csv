@@ -1,0 +1,2 @@
+﻿ticker,technical_score_0_1,sentiment_score_0_1,fundamental_score_0_1,overall_score_0_1,overall_score_1_10,weights,start_date,end_date,news_days_lookback
+IVL,1.0,0.497,0.5,0.6742,6.74,"{'technical': 0.35, 'sentiment': 0.25, 'fundamental': 0.4}",2024-01-01,2025-08-14,14

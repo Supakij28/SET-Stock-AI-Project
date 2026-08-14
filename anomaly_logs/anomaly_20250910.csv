@@ -1,0 +1,3 @@
+﻿Date,timestamp_bkk,ticker,type,close,volume,detail
+2025-09-09,2025-09-09 16:25,AOT.BK,VOLUME_SPIKE,38.25,429409,"Vol 429,409 > 3.0×avg(20) ~ 85,040"
+2025-09-09,2025-09-09 16:25,COM7.BK,VOLUME_SPIKE,25.5,121625,"Vol 121,625 > 3.0×avg(20) ~ 39,437"

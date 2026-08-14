@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Trading Visualization</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <h1>Stock Trading Visualization</h1>
+
+    <div id="inputs">
+        <label for="trailing-stop">Trailing Stop Percentage (%):</label>
+        <input type="number" id="trailing-stop" value="5" step="0.1" min="0" max="100">
+
+        <label for="short-sma">Short SMA Window:</label>
+        <input type="number" id="short-sma" value="10" step="1" min="1">
+
+        <label for="long-sma">Long SMA Window:</label>
+        <input type="number" id="long-sma" value="50" step="1" min="1">
+
+        <button id="update-btn">Update Chart</button>
+    </div>
+
+    <canvas id="tradingChart" width="800" height="400"></canvas>
+
+    <div id="summary">
+        <h2>Trading Summary</h2>
+        <p><strong>Initial Balance:</strong> <span id="initial-balance">-</span></p>
+        <p><strong>Final Balance:</strong> <span id="final-balance">-</span></p>
+        <p><strong>Profit/Loss:</strong> <span id="profit-loss">-</span></p>
+    </div>
+
+    <script>
+        document.getElementById('update-btn').addEventListener('click', async () => {
+            const trailingStop = parseFloat(document.getElementById('trailing-stop').value) / 100;
+            const shortSMA = parseInt(document.getElementById('short-sma').value);
+            const longSMA = parseInt(document.getElementById('long-sma').value);
+
+            const response = await fetch('/update-chart', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    trailing_stop_pct: trailingStop,
+                    short_window: shortSMA,
+                    long_window: longSMA,
+                }),
+            });
+
+            const result = await response.json();
+
+            updateChart(result.data);
+            updateSummary(result.summary);
+        });
+
+        function updateChart(data) {
+            const ctx = document.getElementById('tradingChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: data.dates,
+                    datasets: [
+                        {
+                            label: 'Close Price',
+                            data: data.close,
+                            borderColor: 'blue',
+                            borderWidth: 1,
+                        },
+                        {
+                            label: 'Short SMA',
+                            data: data.short_sma,
+                            borderColor: 'green',
+                            borderWidth: 1,
+                            borderDash: [5, 5],
+                        },
+                        {
+                            label: 'Long SMA',
+                            data: data.long_sma,
+                            borderColor: 'red',
+                            borderWidth: 1,
+                            borderDash: [5, 5],
+                        },
+                    ],
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            display: true,
+                        },
+                    },
+                },
+            });
+        }
+
+        function updateSummary(summary) {
+            document.getElementById('initial-balance').textContent = summary.initial_balance;
+            document.getElementById('final-balance').textContent = summary.final_balance;
+            document.getElementById('profit-loss').textContent = summary.profit_loss;
+        }
+    </script>
+</body>
+</html>

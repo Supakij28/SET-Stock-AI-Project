@@ -1,0 +1,14 @@
+streamlit
+yfinance
+yahooquery
+pandas
+numpy
+plotly
+scikit-learn
+dtaidistance
+requests
+google-generativeai
+pytz
+supabase
+psycopg2-binary
+python-dotenv
