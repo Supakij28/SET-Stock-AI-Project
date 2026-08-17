@@ -2163,37 +2163,7 @@ if st.session_state['batch_results'] is not None:
                             stop_loss = row.get('Stop_Loss', 0)
                             pat_consensus = row.get('Pattern Consensus (%)', 0)
                             
-                            card_html = f"""
-                            <div class="compact-card">
-                                <div class="card-header">
-                                    <div class="header-left">
-                                        <div class="dot-indicator" style="background-color: {dot_color};"></div>
-                                        <div class="ticker-name">{row['Ticker']}</div>
-                                    </div>
-                                    <div class="status-pill">{s_label}</div>
-                                </div>
-                                {intraday_html}
-                                <div class="score-container">
-                                    <div class="score-label">Score</div>
-                                    <div class="score-big">{row['Conviction_Score']}</div>
-                                </div>
-                                <div class="signal-badge" style="background-color: {sig_bg}; color: {sig_fg}; border: {sig_border};">{sig_val}</div>
-                                <div class="stats-grid">
-                                    <div class="stat-item">
-                                        <div class="stat-lbl">SECTOR RS</div>
-                                        <div class="stat-val" style="color: {srs_color}; font-weight: 700;">{srs_val:+.1f}%</div>
-                                    </div>
-                                    <div class="stat-item">
-                                        <div class="stat-lbl">STOP LOSS</div>
-                                        <div class="stat-val" style="color: #991b1b;">{stop_loss:.2f}</div>
-                                    </div>
-                                    <div class="stat-item">
-                                        <div class="stat-lbl">PATTERN</div>
-                                        <div class="stat-val">{pat_consensus:.1f}%</div>
-                                    </div>
-                                </div>
-                            </div>
-                            """
+                            card_html = f'<div class="compact-card"><div class="card-header"><div class="header-left"><div class="dot-indicator" style="background-color: {dot_color};"></div><div class="ticker-name">{row["Ticker"]}</div></div><div class="status-pill">{s_label}</div></div>{intraday_html}<div class="score-container"><div class="score-label">Score</div><div class="score-big">{row["Conviction_Score"]}</div></div><div class="signal-badge" style="background-color: {sig_bg}; color: {sig_fg}; border: {sig_border};">{sig_val}</div><div class="stats-grid"><div class="stat-item"><div class="stat-lbl">SECTOR RS</div><div class="stat-val" style="color: {srs_color}; font-weight: 700;">{srs_val:+.1f}%</div></div><div class="stat-item"><div class="stat-lbl">STOP LOSS</div><div class="stat-val" style="color: #991b1b;">{stop_loss:.2f}</div></div><div class="stat-item"><div class="stat-lbl">PATTERN</div><div class="stat-val">{pat_consensus:.1f}%</div></div></div></div>'
                             # Clean HTML indentation and render
                             clean_card_html = textwrap.dedent(card_html).strip()
                             st.markdown(clean_card_html, unsafe_allow_html=True)
