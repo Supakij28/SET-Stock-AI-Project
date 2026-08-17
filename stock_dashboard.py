@@ -2194,7 +2194,9 @@ if st.session_state['batch_results'] is not None:
                                 </div>
                             </div>
                             """
-                            st.markdown(card_html, unsafe_allow_html=True)
+                            # Clean HTML indentation and render
+                            clean_card_html = textwrap.dedent(card_html).strip()
+                            st.markdown(clean_card_html, unsafe_allow_html=True)
                             
                             with st.expander(f"Details: {row['Ticker']}", expanded=False):
                                 st.write(f"✅ {row['Why']}")
@@ -2227,7 +2229,9 @@ if st.session_state['batch_results'] is not None:
                     act_strat = r_row.get('actual_strategy', 'N/A')
                     
                     r_card_html = f"""<div class="compact-card"><div class="card-header"><div class="header-left"><div class="dot-indicator" style="background-color: {r_dot_color};"></div><div class="ticker-name">{r_row['ticker']}</div></div><div class="status-pill recovery">RECOVERY</div></div><div class="score-container"><div class="score-label">Score</div><div class="score-big">{r_row['recovery_score']}</div></div><div style="display: flex; flex-direction: column; gap: 4px;"><div class="signal-badge" style="background-color: {r_sig_bg}; color: {r_sig_fg};">OVERSOLD RECOVERY</div><div style="font-size: 0.75rem; font-weight: 600; color: #7c3aed;">Signal: {act_sig}</div><div style="font-size: 0.75rem; font-weight: 600; color: #4b5563;">Strategy: {act_strat}</div></div><div style="margin-top: 10px; padding: 6px; background-color: #fdfcff; border-radius: 8px; border: 1px dashed #ddd6fe;">{reasons_html}</div><div class="stats-grid"><div class="stat-item"><div class="stat-lbl">RSI</div><div class="stat-val">{r_row['rsi']:.1f}</div></div><div class="stat-item"><div class="stat-lbl">PRICE</div><div class="stat-val">{r_row['price']:.2f}</div></div><div class="stat-item"><div class="stat-lbl">PIN BAR</div><div class="stat-val">{'✅' if r_row['is_pin'] else '❌'}</div></div></div></div>"""
-                    st.markdown(r_card_html, unsafe_allow_html=True)
+                    # Clean HTML indentation and render
+                    clean_r_card_html = textwrap.dedent(r_card_html).strip()
+                    st.markdown(clean_r_card_html, unsafe_allow_html=True)
                     
                     with st.expander(f"Recovery Analysis: {r_row['ticker']}"):
                         st.write(f"🔍 **ทำไมถึงติดโผ:** {', '.join(r_row['reasons'])}")
