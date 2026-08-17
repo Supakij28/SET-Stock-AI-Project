@@ -761,7 +761,7 @@ def generate_ai_trading_plan(ticker, row, api_key, ai_insights=None):
         - ความต่างของคะแนน (Score Diff): {row['Score Diff']}
         - การยืนยันหลายไทม์เฟรม (MTF Status): {row['MTF Conf']} (Score: {row['MTF Score']})
         - Relative Volume: {row['Relative Vol']}x
-        - ความแม่นยำทางสถิติ (Pattern Consensus): {row['Pattern Consensus (%)']}%
+        - ความแม่นยำทางสถิติ (Pattern Consensus): {row.get('Pattern Consensus (%)', 0)}%
         - สภาวะตลาด (Market Regime): {st.session_state.get('market_regime', 'N/A')}
         
         {f"ข้อมูลวิเคราะห์เพิ่มเติมจาก AI (Historical Insights): {ai_insights}" if ai_insights else ""}
@@ -1372,7 +1372,7 @@ def generate_unified_report(batch_df, regime):
     # Analyze Top 20 by Score Diff
     for _, row in candidates.head(20).iterrows():
         ticker = row['Ticker']
-        similarity = row['Pattern Consensus (%)']
+        similarity = row.get('Pattern Consensus (%)', 0)
         mtf_score = row.get('MTF Score', 0)
         rsi = row.get('RSI', 50)
         rel_vol = row.get('Relative Vol', 1.0)
@@ -1800,7 +1800,7 @@ def run_set100_batch_scan(tickers, target_date=None):
             
             # 2. Re-calculate Conviction Score with SRS
             conviction_score, strategy, reasons, warnings = calculate_conviction_score(
-                ticker, row['Signal'], row['Pattern Consensus (%)'], 
+                ticker, row['Signal'], row.get('Pattern Consensus (%)', 0), 
                 row['MTF Score'], row['m_regime'], row['perf_stats'], 
                 row['RSI'], row['Relative Vol'], row['Score Velocity'],
                 sector_rs=srs_val, price_change=row['% Change']
@@ -1814,7 +1814,7 @@ def run_set100_batch_scan(tickers, target_date=None):
             # 3. Final entry for the report
             entry = {
                 'Ticker': ticker,
-                'Pattern Consensus (%)': row['Pattern Consensus (%)'],
+                'Pattern Consensus (%)': row.get('Pattern Consensus (%)', 0),
                 'Sector': row['Sector'],
                 'Last Price': row['Last Price'],
                 'Day High': row['Day High'],
@@ -2111,7 +2111,8 @@ if st.session_state['batch_results'] is not None:
             "💎 Bottom Fishing", 
             "📊 Market Breadth", 
             "📜 Admin & History", 
-            "💎 SILENT ACCUM Insight"
+            "💎 SILENT ACCUM Insight",
+            "🛠️ Advanced Tools / More Features"
         ])
         
         with main_tabs[0]: # Unified Report
@@ -2160,6 +2161,7 @@ if st.session_state['batch_results'] is not None:
                             srs_val = row.get('Sector_RS', 0)
                             srs_color = "#166534" if srs_val > 0 else ("#991b1b" if srs_val < 0 else "#4b5563")
                             stop_loss = row.get('Stop_Loss', 0)
+                            pat_consensus = row.get('Pattern Consensus (%)', 0)
                             
                             card_html = f"""
                             <div class="compact-card">
@@ -2186,8 +2188,8 @@ if st.session_state['batch_results'] is not None:
                                         <div class="stat-val" style="color: #991b1b;">{stop_loss:.2f}</div>
                                     </div>
                                     <div class="stat-item">
-                                        <div class="stat-lbl">MTF CONF</div>
-                                        <div class="stat-val">{row['MTF_Score']}</div>
+                                        <div class="stat-lbl">PATTERN</div>
+                                        <div class="stat-val">{pat_consensus:.1f}%</div>
                                     </div>
                                 </div>
                             </div>
@@ -2207,7 +2209,8 @@ if st.session_state['batch_results'] is not None:
                     st.info("ℹ️ ไม่พบหุ้นที่เข้าเกณฑ์ Unified")
         
         with main_tabs[1]: # Bottom Fishing
-            st.info("หุ้นที่ Oversold และเริ่มมีสัญญาณกลับตัว (Bottom Fishing)")
+            st.info("💎 หุ้นที่ Oversold และเริ่มมีสัญญาณกลับตัว (Bottom Fishing)")
+            st.caption("🎯 **Feature Insight:** ค้นหาหุ้นที่มี RSI ต่ำกว่า 35 และเริ่มมีแรงซื้อกลับ (RSI Turning Up) พร้อม Candlestick รูปแบบ Bullish Pin Bar เพื่อหาจังหวะต้นเทรนด์")
             recovery_list = [row['Recovery_Data'] for _, row in batch_df.iterrows() if 'Recovery_Data' in row and row['Recovery_Data'] is not None]
             
             if recovery_list:
@@ -2237,12 +2240,14 @@ if st.session_state['batch_results'] is not None:
         
         with main_tabs[2]: # Market Breadth
             st.subheader(f"📊 Market Breadth: หุ้นบวก {pos_count} | หุ้นลบ {neg_count}")
+            st.caption("📈 **Market Breadth:** สรุปภาพรวมความแข็งแกร่งของตลาด SET100 ผ่านจำนวนหุ้นที่บวกและลบ เพื่อดูทิศทางกระแสเงินทุน (Money Flow)")
             if 'Signal' in batch_df.columns:
                 sig_counts = batch_df['Signal'].value_counts().reset_index()
                 st.dataframe(sig_counts, use_container_width=True)
 
         with main_tabs[3]: # Admin & History
-            st.subheader("🏆 Leaderboard & History")
+            st.subheader("🏆 Leaderboard & History (Supabase)")
+            st.caption("📜 **Data Persistence:** ดึงข้อมูลประวัติการสแกนและผลแพ้ชนะ (Win/Loss) ย้อนหลังโดยตรงจากฐานข้อมูล Cloud (Supabase)")
             # Sorting desired columns to the front
             cols = batch_df.columns.tolist()
             desired_order = ["Ticker", "Signal", "Pattern Consensus (%)", "Last Price", "Day High"]
@@ -2260,41 +2265,6 @@ if st.session_state['batch_results'] is not None:
                 with st.spinner("Updating labels..."):
                     count = run_automated_labeling()
                     st.success(f"Updated {count} records!") if count > 0 else st.info("No new records to label.")
-
-            # Load labeled data for insights
-            labeled_df = pd.DataFrame()
-            if supabase:
-                try:
-                    response = supabase.table("scan_results") \
-                        .select("*") \
-                        .not_.is_("outcome_label", "null") \
-                        .order("id", desc=True) \
-                        .limit(200) \
-                        .execute()
-                    labeled_df = pd.DataFrame(response.data)
-                except:
-                    pass
-
-            with st.expander("🔬 Quant Research Insights", expanded=False):
-                if not labeled_df.empty:
-                    st.write("### 🎯 Hit Rate Accuracy")
-                    sig_perf = labeled_df.groupby('signal_type').agg(
-                        Total_Signals=('outcome_label', 'count'),
-                        Wins=('outcome_label', lambda x: (x == 'Win').sum())
-                    )
-                    sig_perf['Win Rate (%)'] = (sig_perf['Wins'] / sig_perf['Total_Signals']) * 100
-                    st.dataframe(sig_perf.style.format({'Win Rate (%)': '{:.1f}%'}), use_container_width=True)
-                    
-                    st.write("### 🤖 AI Feature Importance")
-                    features = ['bull_score', 'bear_score', 'score_diff', 'relative_vol', 'rsi']
-                    X = labeled_df[features].fillna(0)
-                    y = labeled_df['outcome_label'].apply(lambda x: 1 if x == 'Win' else 0)
-                    rf = RandomForestClassifier(n_estimators=100, random_state=42)
-                    rf.fit(X, y)
-                    importance_df = pd.DataFrame({'Feature': features, 'Importance (%)': rf.feature_importances_ * 100}).sort_values('Importance (%)', ascending=False)
-                    st.dataframe(importance_df, use_container_width=True)
-                else:
-                    st.info("ยังไม่มีข้อมูลการวิจัยเพียงพอ")
 
             with st.expander("View Saved Scan History", expanded=False):
                 if supabase:
@@ -2315,6 +2285,13 @@ if st.session_state['batch_results'] is not None:
                         
                         st.write("### 📊 Quick Insights from DB")
                         c1, c2, c3 = st.columns(3)
+                        # Load labeled data for metrics
+                        labeled_df = pd.DataFrame()
+                        try:
+                            l_resp = supabase.table("scan_results").select("*").not_.is_("outcome_label", "null").execute()
+                            labeled_df = pd.DataFrame(l_resp.data)
+                        except: pass
+                        
                         if not labeled_df.empty:
                             win_rate = (len(labeled_df[labeled_df['outcome_label'] == 'Win']) / len(labeled_df)) * 100
                             c2.metric("Win Rate (Labeled)", f"{win_rate:.1f}%")
@@ -2387,347 +2364,219 @@ if st.session_state['batch_results'] is not None:
                 st.dataframe(sa_data[['ticker', 'signal_date', 'days_to_move', 'max_gain_t5']].head(10).style.format({'max_gain_t5': '{:.2f}%'}), use_container_width=True)
             else:
                 st.warning("ยังไม่มีข้อมูล SILENT ACCUM เพียงพอสำหรับการวิเคราะห์")
-                
-# --- Sidebar: Strategy Builder ---
-st.sidebar.header("🛠 Quant Strategy Builder")
 
-# Initialize AI Optimization values in session state
-if 'ai_params' not in st.session_state:
-    st.session_state['ai_params'] = None
-
-if 'stock_list' not in st.session_state:
-    st.session_state['stock_list'] = ["KTC.BK", "AMATA.BK", "RCL.BK", "CPF.BK"]
-
-with st.sidebar.expander("📥 Data Management", expanded=True):
-    new_ticker = st.text_input("➕ Add Ticker", "").upper()
-    if new_ticker:
-        if not new_ticker.endswith(".BK") and "." not in new_ticker: new_ticker += ".BK"
-        if new_ticker not in st.session_state['stock_list']:
-            st.session_state['stock_list'].append(new_ticker)
-    selected_ticker = st.selectbox("Select Stock", st.session_state['stock_list'])
-    fetch_btn = st.button("🚀 Fetch Data", type="primary", use_container_width=True)
-
-if fetch_btn:
-    with st.spinner("Downloading..."):
-        df_raw = get_stock_data(selected_ticker)
-        if df_raw is not None:
-            st.session_state['df_raw'] = df_raw
-            st.session_state['active_ticker'] = selected_ticker
-        else:
-            st.error("Failed to load data.")
-
-st.sidebar.divider()
-
-if 'df_raw' in st.session_state:
-    if st.sidebar.button("🤖 AI Strategy Optimizer", use_container_width=True):
-        if not user_api_key:
-            st.sidebar.warning("Please enter Google API Key above.")
-        else:
-            # We need current stats and trade log for AI. 
-            current_df = calculate_quant_indicators(st.session_state['df_raw'], 14, 5, 20)
-            _, current_stats, _ = run_backtest(current_df, 30, 70, 1.2)
+        with main_tabs[5]: # Advanced Tools / More Features
+            st.info("🛠️ Advanced Tools & Strategy Builder")
+            st.caption("⚙️ **Advanced Features:** รวมเครื่องมือวิเคราะห์เชิงลึก เช่น การปรับจูน Parameter ด้วย AI, ระบบทดสอบย้อนหลัง (Backtest) และห้องทดลองรูปแบบราคา (Pattern Lab)")
             
-            with st.sidebar.status("AI is analyzing...", expanded=True) as status:
-                ai_rec = get_ai_optimization(
-                    st.session_state['active_ticker'], 
-                    current_stats, 
-                    None, 
-                    {"rsi_p": 14, "rsi_b": 30, "rsi_s": 70, "ema_f": 5, "ema_s": 20, "rv_m": 1.2},
-                    user_api_key
-                )
-            if ai_rec:
-                st.session_state['ai_params'] = ai_rec
-                status.update(label="✅ AI Optimization Complete!", state="complete")
-                st.sidebar.info(f"💡 AI Recommendation: {ai_rec['reasoning']}")
-            else:
-                status.update(label="❌ AI Optimization Failed", state="error")
-
-with st.sidebar.form("strategy_params"):
-    st.subheader("⚙️ Buy/Sell Parameters")
-    
-    # Use AI values if available, else use defaults
-    p = st.session_state['ai_params'] if st.session_state['ai_params'] else {}
-    
-    rsi_p = st.slider("RSI Period", 5, 30, p.get('rsi_p', 14))
-    rsi_b = st.slider("Buy Threshold (RSI <=)", 10, 80, p.get('rsi_b', 50))
-    rsi_s = st.slider("Sell Threshold (RSI >=)", 40, 90, p.get('rsi_s', 70))
-    ema_f = st.number_input("Fast EMA", 5, 50, p.get('ema_f', 10))
-    ema_s = st.number_input("Slow EMA", 10, 200, p.get('ema_s', 50))
-    rv_m = st.slider("Min Rel. Volume", 1.0, 3.0, p.get('rv_m', 1.5), 0.1)
-    
-    st.divider()
-    st.subheader("🔍 Scanner Settings")
-    min_sim = st.slider("Min Similarity Threshold (%)", 50, 95, 80)
-    scanner_mode = st.radio("Scanner Mode", ["Bullish (Breakout)", "Bearish (Danger Zone)"], horizontal=True)
-    
-    apply_btn = st.form_submit_button("🔄 Apply & Backtest", use_container_width=True)
-
-# --- Main Dashboard ---
-if 'df_raw' in st.session_state:
-    df = calculate_quant_indicators(st.session_state['df_raw'], rsi_p, ema_f, ema_s)
-    trade_log, stats, equity_curve = run_backtest(df, rsi_b, rsi_s, rv_m)
-    
-    st.title(f"📈 {st.session_state['active_ticker']} Strategy Station")
-    
-    # Volatility Guard Alert
-    atr_now = df['ATR'].iloc[-1]
-    atr_avg5 = df['ATR_Avg_5'].iloc[-1]
-    if atr_now > (atr_avg5 * 1.2):
-        st.warning(f"⚠️ **High Volatility Alert**: ATR ({atr_now:.2f}) is 20%+ above 5-day average ({atr_avg5:.2f}). Exercise caution!")
-    
-    # 1. Performance Metrics
-    if stats and 'Total Return (%)' in stats:
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total Return", f"{stats['Total Return (%)']:.2f}%")
-        m2.metric("Win Rate", f"{stats['Win Rate (%)']:.1f}%")
-        m3.metric("Max Drawdown", f"-{stats['Max Drawdown (%)']:.2f}%", delta_color="inverse")
-        m4.metric("Total Trades", stats['Total Trades'])
-    elif stats and 'total_crosses' in stats:
-        st.info("No trades executed with current parameters. See 'Strategy Breakdown' below for details.")
-    
-    # 2. Main Chart (Candlestick + Signals + Projection)
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-    
-    # Candlesticks
-    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['EMA_Fast'], name=f"EMA {ema_f}", line=dict(color='orange', width=1)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['EMA_Slow'], name=f"EMA {ema_s}", line=dict(color='blue', width=1)), row=1, col=1)
-    
-    # Buy/Sell Arrows
-    if trade_log is not None:
-        fig.add_trace(go.Scatter(x=trade_log['Entry Date'], y=trade_log['Entry Price'], mode='markers', marker=dict(symbol='triangle-up', size=12, color='green'), name='Buy'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=trade_log['Exit Date'], y=trade_log['Exit Price'], mode='markers', marker=dict(symbol='triangle-down', size=12, color='red'), name='Sell'), row=1, col=1)
-    
-    # RSI
-    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], name="RSI", line=dict(color='purple')), row=2, col=1)
-    fig.add_hline(y=rsi_s, line_dash="dash", line_color="red", row=2, col=1)
-    fig.add_hline(y=rsi_b, line_dash="dash", line_color="green", row=2, col=1)
-    
-    fig.update_layout(height=600, template="plotly_white", xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # 3. DTW Projection Chart
-    st.subheader("🔮 Pattern Matching Projection (Next 20 Days)")
-    projections = get_dtw_projection(df)
-    if projections:
-        proj_fig = go.Figure()
-        # Last 40 days of actual price
-        last_40 = df['Close'].iloc[-40:]
-        proj_fig.add_trace(go.Scatter(x=list(range(-40, 0)), y=last_40.values, name="Actual Price", line=dict(color='black', width=3)))
-        
-        colors = ['rgba(34, 197, 94, 0.6)', 'rgba(59, 130, 246, 0.6)', 'rgba(168, 85, 247, 0.6)']
-        for i, p in enumerate(projections):
-            proj_fig.add_trace(go.Scatter(x=list(range(0, 20)), y=p['path'], name=f"Match {i+1} ({p['date_range']})", line=dict(dash='dot', color=colors[i])))
+            # Sub-tabs for Advanced Tools
+            adv_tabs = st.tabs(["⚙️ Strategy Builder", "📈 Performance Dashboard", "🔮 Pattern Lab"])
             
-        proj_fig.update_layout(height=400, template="plotly_white", xaxis_title="Days from Today", yaxis_title="Price")
-        st.plotly_chart(proj_fig, use_container_width=True)
-    
-    # 4. Trade Log & Equity Curve
-    c_log, c_eq = st.columns([0.6, 0.4])
-    with c_log:
-        st.subheader("📜 Detailed Trade Log")
-        if trade_log is not None:
-            st.dataframe(trade_log.style.format({'Profit (%)': '{:.2f}%', 'Entry Price': '{:.2f}', 'Exit Price': '{:.2f}'}), use_container_width=True)
-        else:
-            st.info("No trades executed with current parameters.")
-            # Show why no trades happened
-            if stats and 'total_crosses' in stats: # case when run_backtest returned (None, debug_info, None)
-                d_info = stats
-            elif isinstance(stats, dict) and 'debug' in stats: # case when it returned (log, stats, curve) but we check here just in case
-                d_info = stats['debug']
-            else:
-                d_info = None
-            
-            if d_info:
-                st.warning(f"""
-                🔎 **Strategy Breakdown:**
-                - Total EMA Crosses found: {d_info['total_crosses']}
-                - Met RSI <= {rsi_b}: {d_info['rsi_met']}
-                - Met Volume >= {rv_m}: {d_info['vol_met']}
+            with adv_tabs[0]: # Strategy Builder
+                st.subheader("🛠 Quant Strategy Builder")
+                st.caption("🔧 **Strategy Builder:** ปรับแต่งเงื่อนไขการซื้อขายด้วยตัวเอง หรือให้ AI ช่วยคำนวณค่าที่เหมาะสมที่สุด (Optimizer)")
                 
-                *Tip: Try increasing 'Buy Threshold' or decreasing 'Min Rel. Volume' to see more trades.*
-                """)
-            
-    with c_eq:
-        st.subheader("📈 Equity Growth")
-        if equity_curve is not None:
-            eq_fig = go.Figure()
-            eq_fig.add_trace(go.Scatter(x=equity_curve['Trade'], y=equity_curve['Equity'], fill='tozeroy', line=dict(color='green')))
-            eq_fig.update_layout(height=350, template="plotly_white", title="Capital: 100k Base")
-            st.plotly_chart(eq_fig, use_container_width=True)
+                # Initialize AI Optimization values in session state
+                if 'ai_params' not in st.session_state:
+                    st.session_state['ai_params'] = None
+                
+                if 'stock_list' not in st.session_state:
+                    st.session_state['stock_list'] = ["KTC.BK", "AMATA.BK", "RCL.BK", "CPF.BK"]
+                
+                col_data, col_ai = st.columns(2)
+                with col_data:
+                    st.markdown("### 📥 Data Management")
+                    new_ticker = st.text_input("➕ Add Ticker", "", key="adv_add_ticker").upper()
+                    if new_ticker:
+                        if not new_ticker.endswith(".BK") and "." not in new_ticker: new_ticker += ".BK"
+                        if new_ticker not in st.session_state['stock_list']:
+                            st.session_state['stock_list'].append(new_ticker)
+                    selected_ticker = st.selectbox("Select Stock", st.session_state['stock_list'], key="adv_select_ticker")
+                    fetch_btn = st.button("🚀 Fetch Data", type="primary", use_container_width=True, key="adv_fetch_btn")
+                
+                if fetch_btn:
+                    with st.spinner("Downloading..."):
+                        df_raw_new = get_stock_data(selected_ticker)
+                        if df_raw_new is not None:
+                            st.session_state['df_raw'] = df_raw_new
+                            st.session_state['active_ticker'] = selected_ticker
+                            st.rerun()
+                        else:
+                            st.error("Failed to load data.")
+                
+                with col_ai:
+                    st.markdown("### 🤖 AI Strategy Optimizer")
+                    if 'df_raw' in st.session_state:
+                        if st.button("Run AI Optimizer", use_container_width=True, key="adv_ai_btn"):
+                            if not user_api_key:
+                                st.warning("Please enter Google API Key in the sidebar.")
+                            else:
+                                current_df = calculate_quant_indicators(st.session_state['df_raw'], 14, 5, 20)
+                                _, current_stats, _ = run_backtest(current_df, 30, 70, 1.2)
+                                
+                                with st.status("AI is analyzing...", expanded=True) as status:
+                                    ai_rec = get_ai_optimization(
+                                        st.session_state['active_ticker'], 
+                                        current_stats, 
+                                        None, 
+                                        {"rsi_p": 14, "rsi_b": 30, "rsi_s": 70, "ema_f": 5, "ema_s": 20, "rv_m": 1.2},
+                                        user_api_key
+                                    )
+                                if ai_rec:
+                                    st.session_state['ai_params'] = ai_rec
+                                    status.update(label="✅ AI Optimization Complete!", state="complete")
+                                    st.info(f"💡 AI Recommendation: {ai_rec['reasoning']}")
+                                else:
+                                    status.update(label="❌ AI Optimization Failed", state="error")
+                    else:
+                        st.info("Select a stock and fetch data to use AI Optimizer.")
 
-    # 5. Pattern Scanner
-    st.divider()
-    mode_label = "🚀 Pre-Breakout Pattern Scanner" if scanner_mode == "Bullish (Breakout)" else "🚩 Danger Zone Scanner"
-    st.subheader(f"{mode_label} (Last 5 Days vs History)")
-    
-    scan_mode_val = 'bullish' if scanner_mode == "Bullish (Breakout)" else 'bearish'
-    with st.spinner(f"Scanning for historical patterns..."):
-        scan_results = get_pre_breakout_scanner(df, mode=scan_mode_val)
-        
-    if scan_results:
-        # 3 Columns for charts: Price, Volume, Candlestick
-        scan_fig = make_subplots(
-            rows=1, cols=3, 
-            subplot_titles=("Price Pattern Similarity", "Volume Flow Similarity", "Candlestick Comparison"),
-            column_widths=[0.3, 0.3, 0.4]
-        )
-        
-        # Color configuration based on mode
-        main_color = 'green' if scan_mode_val == 'bullish' else 'red'
-        jump_color = 'lime' if scan_mode_val == 'bullish' else 'crimson'
-        
-        # Current Patterns (5 points)
-        scan_fig.add_trace(go.Scatter(x=list(range(5)), y=scan_results['curr_p'], name="Current Price", line=dict(color='black', width=3)), row=1, col=1)
-        scan_fig.add_trace(go.Scatter(x=list(range(5)), y=scan_results['curr_v'], name="Current Volume", line=dict(color='gray', width=3, dash='dash')), row=1, col=2)
-        
-        # Historical Best Match
-        best = scan_results['matches'][0]
-        # 1. Historical Pattern (Day 0-4)
-        scan_fig.add_trace(go.Scatter(
-            x=list(range(5)), 
-            y=best['hist_p'], 
-            name=f"Best Match History ({pd.to_datetime(best['date']).date()})", 
-            line=dict(color=main_color, dash='dot')
-        ), row=1, col=1)
-        
-        # 2. Breakout/Drop Projection (Day 4 to 5) - Highlighted
-        jump_label = f"{best['jump']:+.1f}%"
-        scan_fig.add_trace(go.Scatter(
-            x=[4, 5], 
-            y=[best['hist_p_ext'][4], best['hist_p_ext'][5]], 
-            name="Historical Move",
-            mode='lines+markers+text',
-            text=["", jump_label],
-            textposition="top center",
-            line=dict(color=jump_color, width=5),
-            marker=dict(size=8, color=jump_color)
-        ), row=1, col=1)
-        
-        scan_fig.add_trace(go.Scatter(x=list(range(5)), y=best['hist_v'], name=f"Best Match Volume", line=dict(color='blue', dash='dot')), row=1, col=2)
-        
-        # 3. Candlestick Comparison (Col 3)
-        # Current Candlesticks
-        curr_ohlc = scan_results['curr_ohlc']
-        scan_fig.add_trace(go.Candlestick(
-            x=list(range(5)),
-            open=curr_ohlc['Open'],
-            high=curr_ohlc['High'],
-            low=curr_ohlc['Low'],
-            close=curr_ohlc['Close'],
-            name="Current Candles"
-        ), row=1, col=3)
-        
-        # Historical Best Match Candlesticks (Scaled and Transparent)
-        hist_ohlc = best['hist_ohlc_scaled']
-        scan_fig.add_trace(go.Candlestick(
-            x=list(range(6)),
-            open=hist_ohlc['Open'],
-            high=hist_ohlc['High'],
-            low=hist_ohlc['Low'],
-            close=hist_ohlc['Close'],
-            name="Historical Match Candles",
-            increasing_line_color='rgba(34, 197, 94, 0.3)',
-            decreasing_line_color='rgba(239, 68, 68, 0.3)',
-            increasing_fillcolor='rgba(34, 197, 94, 0.1)',
-            decreasing_fillcolor='rgba(239, 68, 68, 0.1)'
-        ), row=1, col=3)
-        
-        scan_fig.update_layout(height=450, template="plotly_white", showlegend=True, xaxis3_rangeslider_visible=False)
-        st.plotly_chart(scan_fig, use_container_width=True)
-        
-        # Matching Summary Column (below charts for more space)
-        st.write("### 📊 Matching Summary")
-        m_cols = st.columns(3)
-        for i, m in enumerate(scan_results['matches']):
-            similarity = max(0, 100 - (m['dist'] * 20)) 
-            sim_color = "green" if similarity > 80 else "orange"
-            jump_val_color = "green" if m['jump'] > 0 else "red"
-            with m_cols[i]:
-                st.markdown(f"""
-                **Match #{i+1}: {pd.to_datetime(m['date']).date()}**
-                - Similarity Score: :{sim_color}[{similarity:.1f}%]
-                - Historical Move: :{jump_val_color}[{m['jump']:+.1f}%]
-                """)
-        
-        if scan_results['matches'][0]['dist'] < 1.0:
-            msg = "🔥 HIGH CONVICTION: Pattern highly resembles a historical breakout!" if scan_mode_val == 'bullish' else "⚠️ WARNING: Pattern highly resembles a historical CRASH!"
-            if scan_mode_val == 'bullish':
-                st.success(msg)
-            else:
-                st.error(msg)
-        else:
-            st.info("ℹ️ Pattern is being monitored. No high-conviction match yet.")
-        
-        # 6. Scanner Accuracy Validator
-        st.divider()
-        st.subheader("✅ Scanner Accuracy Validator")
-        st.write(f"Test how often this {min_sim}%+ Similarity pattern actually leads to a {'price jump' if scan_mode_val == 'bullish' else 'price drop'} in the past.")
-        
-        if st.button("🔍 Validate Scanner Accuracy", use_container_width=True):
-            # Extract patterns based on current mode
-            df_temp = df.copy()
-            df_temp['Pct_Change'] = df_temp['Close'].pct_change()
-            
-            if scan_mode_val == 'bullish':
-                events = df_temp[df_temp['Pct_Change'] >= 0.05].index.tolist()
-            else:
-                events = df_temp[df_temp['Pct_Change'] <= -0.05].index.tolist()
-                
-            winning_pats = []
-            for b_date in events:
-                idx = df_temp.index.get_loc(b_date)
-                if idx < 5: continue
-                p_data = df_temp.iloc[idx-5 : idx]
-                p_norm = StandardScaler().fit_transform(p_data[['Close']]).flatten()
-                v_norm = StandardScaler().fit_transform(p_data[['Volume']]).flatten()
-                winning_pats.append({'price_pattern': p_norm, 'vol_pattern': v_norm})
+                st.divider()
+                with st.form("adv_strategy_params"):
+                    st.subheader("⚙️ Buy/Sell Parameters")
+                    p = st.session_state['ai_params'] if st.session_state['ai_params'] else {}
+                    
+                    c1, c2, c3 = st.columns(3)
+                    rsi_p = c1.slider("RSI Period", 5, 30, p.get('rsi_p', 14))
+                    rsi_b = c2.slider("Buy Threshold (RSI <=)", 10, 80, p.get('rsi_b', 50))
+                    rsi_s = c3.slider("Sell Threshold (RSI >=)", 40, 90, p.get('rsi_s', 70))
+                    
+                    c4, c5, c6 = st.columns(3)
+                    ema_f = c4.number_input("Fast EMA", 5, 50, p.get('ema_f', 10))
+                    ema_s = c5.number_input("Slow EMA", 10, 200, p.get('ema_s', 50))
+                    rv_m = c6.slider("Min Rel. Volume", 1.0, 3.0, p.get('rv_m', 1.5), 0.1)
+                    
+                    st.markdown("### 🔍 Scanner Settings")
+                    min_sim = st.slider("Min Similarity Threshold (%)", 50, 95, 80)
+                    scanner_mode = st.radio("Scanner Mode", ["Bullish (Breakout)", "Bearish (Danger Zone)"], horizontal=True)
+                    
+                    apply_btn = st.form_submit_button("🔄 Apply & Backtest", use_container_width=True)
 
-            with st.spinner("Validating historical signals..."):
-                val_results = validate_scanner_accuracy(df, winning_pats, price_threshold=min_sim, vol_threshold=70.0)
-            
-            if val_results:
-                s = val_results['summary']
-                
-                # Big Metrics Row 1
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Total Signals", s['Total Signals'])
-                m2.metric("Hit Rate (%)", f"{s['Hit Rate']:.1f}%")
-                m3.metric("Expectancy", f"{s['Expectancy']:.2f}%", help="Expected profit per trade")
-                
-                # Big Metrics Row 2
-                m4, m5, m6 = st.columns(3)
-                m4.metric("Avg Profit", f"+{s['Avg Profit']:.2f}%")
-                m5.metric("Avg Loss", f"{s['Avg Loss']:.2f}%")
-                m6.metric("Risk/Reward Ratio", f"{s['RR Ratio']:.2f}", help="Avg Profit / Avg Loss")
-                
-                st.write("#### 📜 Historical Accuracy Log")
-                
-                # Formatting function for the table
-                def style_log(row):
-                    styles = [''] * len(row)
-                    # Highlight red if loss is worse than -3%
-                    if row['Next Day Return (%)'] < -3:
-                        styles = ['background-color: rgba(255, 0, 0, 0.1)'] * len(row)
-                    return styles
+            with adv_tabs[1]: # Performance Dashboard
+                if 'df_raw' in st.session_state:
+                    df = calculate_quant_indicators(st.session_state['df_raw'], rsi_p, ema_f, ema_s)
+                    trade_log, stats, equity_curve = run_backtest(df, rsi_b, rsi_s, rv_m)
+                    
+                    st.title(f"📈 {st.session_state['active_ticker']} Strategy Station")
+                    
+                    # Volatility Guard Alert
+                    atr_now = df['ATR'].iloc[-1]
+                    atr_avg5 = df['ATR_Avg_5'].iloc[-1]
+                    if atr_now > (atr_avg5 * 1.2):
+                        st.warning(f"⚠️ **High Volatility Alert**: ATR ({atr_now:.2f}) is 20%+ above 5-day average ({atr_avg5:.2f}). Exercise caution!")
+                    
+                    # 1. Performance Metrics
+                    if stats and 'Total Return (%)' in stats:
+                        m1, m2, m3, m4 = st.columns(4)
+                        m1.metric("Total Return", f"{stats['Total Return (%)']:.2f}%")
+                        m2.metric("Win Rate", f"{stats['Win Rate (%)']:.1f}%")
+                        m3.metric("Max Drawdown", f"-{stats['Max Drawdown (%)']:.2f}%", delta_color="inverse")
+                        m4.metric("Total Trades", stats['Total Trades'])
+                    
+                    # 2. Main Chart
+                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+                    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price"), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=df.index, y=df['EMA_Fast'], name=f"EMA {ema_f}", line=dict(color='orange', width=1)), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=df.index, y=df['EMA_Slow'], name=f"EMA {ema_s}", line=dict(color='blue', width=1)), row=1, col=1)
+                    if trade_log is not None:
+                        fig.add_trace(go.Scatter(x=trade_log['Entry Date'], y=trade_log['Entry Price'], mode='markers', marker=dict(symbol='triangle-up', size=12, color='green'), name='Buy'), row=1, col=1)
+                        fig.add_trace(go.Scatter(x=trade_log['Exit Date'], y=trade_log['Exit Price'], mode='markers', marker=dict(symbol='triangle-down', size=12, color='red'), name='Sell'), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], name="RSI", line=dict(color='purple')), row=2, col=1)
+                    fig.add_hline(y=rsi_s, line_dash="dash", line_color="red", row=2, col=1)
+                    fig.add_hline(y=rsi_b, line_dash="dash", line_color="green", row=2, col=1)
+                    fig.update_layout(height=600, template="plotly_white", xaxis_rangeslider_visible=False)
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 3. DTW Projection Chart
+                    st.subheader("🔮 Pattern Matching Projection (Next 20 Days)")
+                    projections = get_dtw_projection(df)
+                    if projections:
+                        proj_fig = go.Figure()
+                        last_40 = df['Close'].iloc[-40:]
+                        proj_fig.add_trace(go.Scatter(x=list(range(-40, 0)), y=last_40.values, name="Actual Price", line=dict(color='black', width=3)))
+                        colors = ['rgba(34, 197, 94, 0.6)', 'rgba(59, 130, 246, 0.6)', 'rgba(168, 85, 247, 0.6)']
+                        for i, p in enumerate(projections):
+                            proj_fig.add_trace(go.Scatter(x=list(range(0, 20)), y=p['path'], name=f"Match {i+1} ({p['date_range']})", line=dict(dash='dot', color=colors[i])))
+                        proj_fig.update_layout(height=400, template="plotly_white", xaxis_title="Days from Today", yaxis_title="Price")
+                        st.plotly_chart(proj_fig, use_container_width=True)
+                    
+                    # 4. Trade Log & Equity Curve
+                    c_log, c_eq = st.columns([0.6, 0.4])
+                    with c_log:
+                        st.subheader("📜 Detailed Trade Log")
+                        if trade_log is not None:
+                            st.dataframe(trade_log.style.format({'Profit (%)': '{:.2f}%', 'Entry Price': '{:.2f}', 'Exit Price': '{:.2f}'}), use_container_width=True)
+                        else:
+                            st.info("No trades executed with current parameters.")
+                    with c_eq:
+                        st.subheader("📈 Equity Growth")
+                        if equity_curve is not None:
+                            eq_fig = go.Figure()
+                            eq_fig.add_trace(go.Scatter(x=equity_curve['Trade'], y=equity_curve['Equity'], fill='tozeroy', line=dict(color='green')))
+                            eq_fig.update_layout(height=350, template="plotly_white", title="Capital: 100k Base")
+                            st.plotly_chart(eq_fig, use_container_width=True)
+                else:
+                    st.info("Select a stock in 'Strategy Builder' tab to see performance.")
 
-                # Apply styling
-                styled_df = val_results['log'].style.apply(style_log, axis=1).map(
-                    lambda x: 'color: green' if x == '✅ Hit' else 'color: red', 
-                    subset=['Result']
-                ).format({
-                    'Overall Sim': '{:.1f}%',
-                    'Price Sim': '{:.1f}%', 
-                    'Vol Sim': '{:.1f}%', 
-                    'Next Day Return (%)': '{:.2f}%'
-                })
+            with adv_tabs[2]: # Pattern Lab
+                if 'df_raw' in st.session_state:
+                    mode_label = "🚀 Pre-Breakout Pattern Scanner" if scanner_mode == "Bullish (Breakout)" else "🚩 Danger Zone Scanner"
+                    st.subheader(f"{mode_label} (Last 5 Days vs History)")
+                    scan_mode_val = 'bullish' if scanner_mode == "Bullish (Breakout)" else 'bearish'
+                    with st.spinner(f"Scanning for historical patterns..."):
+                        scan_results = get_pre_breakout_scanner(df, mode=scan_mode_val)
+                    if scan_results:
+                        scan_fig = make_subplots(rows=1, cols=3, subplot_titles=("Price Pattern Similarity", "Volume Flow Similarity", "Candlestick Comparison"), column_widths=[0.3, 0.3, 0.4])
+                        main_color = 'green' if scan_mode_val == 'bullish' else 'red'
+                        jump_color = 'lime' if scan_mode_val == 'bullish' else 'crimson'
+                        scan_fig.add_trace(go.Scatter(x=list(range(5)), y=scan_results['curr_p'], name="Current Price", line=dict(color='black', width=3)), row=1, col=1)
+                        scan_fig.add_trace(go.Scatter(x=list(range(5)), y=scan_results['curr_v'], name="Current Volume", line=dict(color='gray', width=3, dash='dash')), row=1, col=2)
+                        best = scan_results['matches'][0]
+                        scan_fig.add_trace(go.Scatter(x=list(range(5)), y=best['hist_p'], name=f"Best Match History ({pd.to_datetime(best['date']).date()})", line=dict(color=main_color, dash='dot')), row=1, col=1)
+                        jump_label = f"{best['jump']:+.1f}%"
+                        scan_fig.add_trace(go.Scatter(x=[4, 5], y=[best['hist_p_ext'][4], best['hist_p_ext'][5]], name="Historical Move", mode='lines+markers+text', text=["", jump_label], textposition="top center", line=dict(color=jump_color, width=5), marker=dict(size=8, color=jump_color)), row=1, col=1)
+                        scan_fig.add_trace(go.Scatter(x=list(range(5)), y=best['hist_v'], name=f"Best Match Volume", line=dict(color='blue', dash='dot')), row=1, col=2)
+                        curr_ohlc = scan_results['curr_ohlc']
+                        scan_fig.add_trace(go.Candlestick(x=list(range(5)), open=curr_ohlc['Open'], high=curr_ohlc['High'], low=curr_ohlc['Low'], close=curr_ohlc['Close'], name="Current Candles"), row=1, col=3)
+                        hist_ohlc = best['hist_ohlc_scaled']
+                        scan_fig.add_trace(go.Candlestick(x=list(range(6)), open=hist_ohlc['Open'], high=hist_ohlc['High'], low=hist_ohlc['Low'], close=hist_ohlc['Close'], name="Historical Match Candles", increasing_line_color='rgba(34, 197, 94, 0.3)', decreasing_line_color='rgba(239, 68, 68, 0.3)', increasing_fillcolor='rgba(34, 197, 94, 0.1)', decreasing_fillcolor='rgba(239, 68, 68, 0.1)'), row=1, col=3)
+                        scan_fig.update_layout(height=450, template="plotly_white", showlegend=True, xaxis3_rangeslider_visible=False)
+                        st.plotly_chart(scan_fig, use_container_width=True)
+                        st.write("### 📊 Matching Summary")
+                        m_cols = st.columns(3)
+                        for i, m in enumerate(scan_results['matches']):
+                            similarity = max(0, 100 - (m['dist'] * 20)) 
+                            sim_color = "green" if similarity > 80 else "orange"
+                            jump_val_color = "green" if m['jump'] > 0 else "red"
+                            with m_cols[i]:
+                                st.markdown(f"**Match #{i+1}: {pd.to_datetime(m['date']).date()}**\n- Similarity Score: :{sim_color}[{similarity:.1f}%]\n- Historical Move: :{jump_val_color}[{m['jump']:+.1f}%]")
+                        
+                        st.divider()
+                        st.subheader("✅ Scanner Accuracy Validator")
+                        if st.button("🔍 Validate Scanner Accuracy", use_container_width=True, key="adv_validate_btn"):
+                            df_temp = df.copy()
+                            df_temp['Pct_Change'] = df_temp['Close'].pct_change()
+                            events = df_temp[df_temp['Pct_Change'] >= 0.05].index.tolist() if scan_mode_val == 'bullish' else df_temp[df_temp['Pct_Change'] <= -0.05].index.tolist()
+                            winning_pats = []
+                            for b_date in events:
+                                idx = df_temp.index.get_loc(b_date)
+                                if idx < 5: continue
+                                p_data = df_temp.iloc[idx-5 : idx]
+                                winning_pats.append({'price_pattern': StandardScaler().fit_transform(p_data[['Close']]).flatten(), 'vol_pattern': StandardScaler().fit_transform(p_data[['Volume']]).flatten()})
+                            with st.spinner("Validating historical signals..."):
+                                val_results = validate_scanner_accuracy(df, winning_pats, price_threshold=min_sim, vol_threshold=70.0)
+                            if val_results:
+                                s = val_results['summary']
+                                m1, m2, m3, m4, m5, m6 = st.columns(6)
+                                m1.metric("Signals", s['Total Signals'])
+                                m2.metric("Hit Rate", f"{s['Hit Rate']:.1f}%")
+                                m3.metric("Expectancy", f"{s['Expectancy']:.2f}%")
+                                m4.metric("Avg Prof", f"+{s['Avg Profit']:.2f}%")
+                                m5.metric("Avg Loss", f"{s['Avg Loss']:.2f}%")
+                                m6.metric("RR Ratio", f"{s['RR Ratio']:.2f}")
+                                st.dataframe(val_results['log'].style.map(lambda x: 'color: green' if x == '✅ Hit' else 'color: red', subset=['Result']), use_container_width=True)
+                else:
+                    st.info("Select a stock in 'Strategy Builder' tab to see Pattern Lab.")
                 
-                st.dataframe(styled_df, use_container_width=True)
-            else:
-                st.info(f"Not enough signals found with Price Similarity > {min_sim}% and Vol Similarity > 70% in history.")
-    else:
-        st.info("No historical breakout events (>5%) found for this stock to compare.")
-
-else:
-    st.info("👋 Welcome! Please select a stock and click '🚀 Fetch Data' in the sidebar to start your analysis.")
+# --- End of Application ---
 
