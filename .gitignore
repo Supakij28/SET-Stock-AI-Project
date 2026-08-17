@@ -24,3 +24,6 @@ yf_cache/
 # OS files
 .DS_Store
 Thumbs.db
+
+*.txt
+@ตั้งค่า API password.txt

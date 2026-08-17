@@ -314,6 +314,67 @@ def get_historical_scores(ticker, limit=5):
     except:
         return pd.DataFrame()
 
+def fetch_latest_scan_results():
+    """Retrieve the most recent batch scan results from Supabase."""
+    if not supabase:
+        return None, 0, 0
+    try:
+        # Get the latest scan timestamp
+        latest = supabase.table("scan_results") \
+            .select("scan_date, scan_time") \
+            .order("scan_date", desc=True) \
+            .order("scan_time", desc=True) \
+            .limit(1) \
+            .execute()
+            
+        if not latest.data:
+            return None, 0, 0
+            
+        date = latest.data[0]['scan_date']
+        time = latest.data[0]['scan_time']
+        
+        # Get all records for this timestamp
+        response = supabase.table("scan_results") \
+            .select("*") \
+            .eq("scan_date", date) \
+            .eq("scan_time", time) \
+            .execute()
+            
+        if not response.data:
+            return None, 0, 0
+            
+        # Reconstruct batch_df format
+        df = pd.DataFrame(response.data)
+        
+        # Mapping Supabase columns back to Dashboard display names
+        df = df.rename(columns={
+            'ticker': 'Ticker',
+            'price': 'Last Price',
+            'bull_score': 'Bullish Score (%)',
+            'bear_score': 'Bearish Score (%)',
+            'score_diff': 'Score Diff',
+            'signal_type': 'Signal',
+            'mtf_score': 'MTF Score',
+            'conviction_score': 'Conviction_Score',
+            'relative_vol': 'Relative Vol',
+            'rsi': 'RSI',
+            'market_regime': 'Market_Regime'
+        })
+        
+        # Ensure calculated columns exist
+        if 'Ticker' in df.columns:
+            # Add sector info
+            df['Sector'] = df['Ticker'].map(SET100_SECTORS)
+            
+        # Calculate counts
+        pos_count = len(df[df['Score Diff'] > 0])
+        neg_count = len(df[df['Score Diff'] < 0])
+        
+        return df, pos_count, neg_count
+    except Exception as e:
+        print(f"Error fetching latest scan: {e}")
+        return None, 0, 0
+
 def run_automated_labeling(days_forward=3, win_threshold=2.0):
     """
     Check unlabeled scan results and verify if they were Win or Loss using Supabase.
@@ -1899,6 +1960,18 @@ run_historical = st.sidebar.button("📊 Run Historical Scan", use_container_wid
 # Persistent storage for scan results to prevent re-scanning on UI interaction
 if 'batch_results' not in st.session_state:
     st.session_state['batch_results'] = None
+    # NEW: Try to fetch latest scan from Supabase on startup/refresh
+    with st.spinner("🔄 Loading Latest Scan Results from Supabase..."):
+        df_latest, pos_l, neg_l = fetch_latest_scan_results()
+        if df_latest is not None:
+            st.session_state['batch_results'] = {
+                'df': df_latest,
+                'pos': pos_l,
+                'neg': neg_l,
+                'is_historical': False,
+                'source': 'Supabase Persistence'
+            }
+            st.toast("✅ Latest scan results loaded from Supabase!", icon="💾")
 
 if run_set100 or run_historical:
     st.session_state['batch_results'] = None  # Clear old results
@@ -2033,295 +2106,151 @@ if st.session_state['batch_results'] is not None:
         st.divider()
 
         # --- MAIN UI TABS ---
-        main_tabs = st.tabs(["🚀 Execution Center", "🔬 Quant Research Lab", "📜 Admin & History"])
+        main_tabs = st.tabs([
+            "🚀 Unified Report", 
+            "💎 Bottom Fishing", 
+            "📊 Market Breadth", 
+            "📜 Admin & History", 
+            "💎 SILENT ACCUM Insight"
+        ])
         
-        with main_tabs[0]: # Execution Center
-            report_tabs = st.tabs(["🚀 Unified Report", "💎 Bottom Fishing", "📊 Market Breadth"])
-            
-            with report_tabs[0]: # Unified Report
-                if not is_hist:
-                    st.info("สรุปผลการวิเคราะห์เชิงปริมาณ (Search + Analyze + Persistence + Backtest)")
-                    st.caption("🔍 **ระบบคัดกรองอัจฉริยะ:** รวม 3 กลยุทธ์ใหม่ (1) **Volume Compression** ตรวจจับวอลุ่มแห้งก่อนระเบิด (2) **Sector Flow Filter** คัดเฉพาะหุ้นที่แข็งแกร่งกว่ากลุ่ม (SRS) และ (3) **Dynamic Stop Loss** ปรับตามความผันผวนจริง (ATR)")
-                    unified_df = generate_unified_report(batch_df, regime)
+        with main_tabs[0]: # Unified Report
+            if not is_hist:
+                st.info("สรุปผลการวิเคราะห์เชิงปริมาณ (Search + Analyze + Persistence + Backtest)")
+                st.caption("🔍 **ระบบคัดกรองอัจฉริยะ:** รวม 3 กลยุทธ์ใหม่ (1) **Volume Compression** ตรวจจับวอลุ่มแห้งก่อนระเบิด (2) **Sector Flow Filter** คัดเฉพาะหุ้นที่แข็งแกร่งกว่ากลุ่ม (SRS) และ (3) **Dynamic Stop Loss** ปรับตามความผันผวนจริง (ATR)")
+                unified_df = generate_unified_report(batch_df, regime)
+                
+                if not unified_df.empty:
+                    # Sorting: High Conviction first, then positive signals
+                    high_strength = unified_df[unified_df['Conviction_Score'] >= 40].copy()
+                    pos_signals = ['BUY', 'GOLDEN BUY', 'PRE-FLY', 'PIN BAR (SUPPORT)', 'SILENT ACCUM']
+                    early_birds = unified_df[(unified_df['Conviction_Score'] < 40) & (unified_df['Signal'].isin(pos_signals))].copy()
+                    top_conviction = pd.concat([high_strength, early_birds]).head(20)
                     
-                    if not unified_df.empty:
-                        # Sorting: High Conviction first, then positive signals
-                        high_strength = unified_df[unified_df['Conviction_Score'] >= 40].copy()
-                        pos_signals = ['BUY', 'GOLDEN BUY', 'PRE-FLY', 'PIN BAR (SUPPORT)', 'SILENT ACCUM']
-                        early_birds = unified_df[(unified_df['Conviction_Score'] < 40) & (unified_df['Signal'].isin(pos_signals))].copy()
-                        top_conviction = pd.concat([high_strength, early_birds]).head(20)
+                    if not top_conviction.empty:
+                        st.success(f"🔥 พบหุ้นน่าสนใจ {len(top_conviction)} ตัว (จัดลำดับตามคะแนนและความมั่นใจ)")
                         
-                        if not top_conviction.empty:
-                            st.success(f"🔥 พบหุ้นน่าสนใจ {len(top_conviction)} ตัว (จัดลำดับตามคะแนนและความมั่นใจ)")
+                        for idx, (i, row) in enumerate(top_conviction.iterrows()):
+                            is_early_bird = row['Conviction_Score'] < 40
                             
-                            for idx, (i, row) in enumerate(top_conviction.iterrows()):
-                                is_early_bird = row['Conviction_Score'] < 40
-                                
-                                # Dot & Label Logic
-                                if is_early_bird:
-                                    dot_color = "#10b981" # Emerald
-                                    s_label = "EARLY ENTRY"
-                                else:
-                                    dot_color = "#3b82f6" if "SWING" in row['Strategy'] else "#f59e0b"
-                                    s_label = row['Strategy']
+                            # Dot & Label Logic
+                            if is_early_bird:
+                                dot_color = "#10b981" # Emerald
+                                s_label = "EARLY ENTRY"
+                            else:
+                                dot_color = "#3b82f6" if "SWING" in row['Strategy'] else "#f59e0b"
+                                s_label = row['Strategy']
 
-                                # Signal Styling
-                                sig_val = row['Signal']
-                                sig_bg = "#f3f4f6"; sig_fg = "#4b5563"; sig_border = "none"
-                                if sig_val in ['BUY', 'GOLDEN BUY', 'PRE-FLY']: sig_bg = "#dcfce7"; sig_fg = "#166534"
-                                elif sig_val == 'REJECTION WICK': sig_bg = "#111827"; sig_fg = "#ffffff"
-                                elif sig_val == 'SILENT ACCUM': sig_bg = "#ecfdf5"; sig_fg = "#065f46"
-                                elif sig_val == 'CONFLICT (HIGH RISK)': sig_bg = "#fee2e2"; sig_fg = "#991b1b"
-                                elif sig_val == 'PIN BAR (SUPPORT)': sig_bg = "#dcfce7"; sig_fg = "#166534"; sig_border = "1px solid #166534"
-                                
-                                # Card Content
-                                intraday_html = ""
-                                if 'Intraday_History' in row and row['Intraday_History']:
-                                    past_sigs = ", ".join(row['Intraday_History'])
-                                    intraday_html = f'<div class="intraday-alert" style="font-size: 0.65rem; color: #f59e0b; margin-bottom: 4px;">⚡ <b>Intraday:</b> {past_sigs}</div>'
+                            # Signal Styling
+                            sig_val = row['Signal']
+                            sig_bg = "#f3f4f6"; sig_fg = "#4b5563"; sig_border = "none"
+                            if sig_val in ['BUY', 'GOLDEN BUY', 'PRE-FLY']: sig_bg = "#dcfce7"; sig_fg = "#166534"
+                            elif sig_val == 'REJECTION WICK': sig_bg = "#111827"; sig_fg = "#ffffff"
+                            elif sig_val == 'SILENT ACCUM': sig_bg = "#ecfdf5"; sig_fg = "#065f46"
+                            elif sig_val == 'CONFLICT (HIGH RISK)': sig_bg = "#fee2e2"; sig_fg = "#991b1b"
+                            elif sig_val == 'PIN BAR (SUPPORT)': sig_bg = "#dcfce7"; sig_fg = "#166534"; sig_border = "1px solid #166534"
+                            
+                            # Card Content
+                            intraday_html = ""
+                            if 'Intraday_History' in row and row['Intraday_History']:
+                                past_sigs = ", ".join(row['Intraday_History'])
+                                intraday_html = f'<div class="intraday-alert" style="font-size: 0.65rem; color: #f59e0b; margin-bottom: 4px;">⚡ <b>Intraday:</b> {past_sigs}</div>'
 
-                                # Build card HTML
-                                srs_val = row.get('Sector_RS', 0)
-                                srs_color = "#166534" if srs_val > 0 else ("#991b1b" if srs_val < 0 else "#4b5563")
-                                stop_loss = row.get('Stop_Loss', 0)
-                                
-                                card_html = f"""
-                                <div class="compact-card">
-                                    <div class="card-header">
-                                        <div class="header-left">
-                                            <div class="dot-indicator" style="background-color: {dot_color};"></div>
-                                            <div class="ticker-name">{row['Ticker']}</div>
-                                        </div>
-                                        <div class="status-pill">{s_label}</div>
+                            # Build card HTML
+                            srs_val = row.get('Sector_RS', 0)
+                            srs_color = "#166534" if srs_val > 0 else ("#991b1b" if srs_val < 0 else "#4b5563")
+                            stop_loss = row.get('Stop_Loss', 0)
+                            
+                            card_html = f"""
+                            <div class="compact-card">
+                                <div class="card-header">
+                                    <div class="header-left">
+                                        <div class="dot-indicator" style="background-color: {dot_color};"></div>
+                                        <div class="ticker-name">{row['Ticker']}</div>
                                     </div>
-                                    {intraday_html}
-                                    <div class="score-container">
-                                        <div class="score-label">Score</div>
-                                        <div class="score-big">{row['Conviction_Score']}</div>
+                                    <div class="status-pill">{s_label}</div>
+                                </div>
+                                {intraday_html}
+                                <div class="score-container">
+                                    <div class="score-label">Score</div>
+                                    <div class="score-big">{row['Conviction_Score']}</div>
+                                </div>
+                                <div class="signal-badge" style="background-color: {sig_bg}; color: {sig_fg}; border: {sig_border};">{sig_val}</div>
+                                <div class="stats-grid">
+                                    <div class="stat-item">
+                                        <div class="stat-lbl">SECTOR RS</div>
+                                        <div class="stat-val" style="color: {srs_color}; font-weight: 700;">{srs_val:+.1f}%</div>
                                     </div>
-                                    <div class="signal-badge" style="background-color: {sig_bg}; color: {sig_fg}; border: {sig_border};">{sig_val}</div>
-                                    <div class="stats-grid">
-                                        <div class="stat-item">
-                                            <div class="stat-lbl">SECTOR RS</div>
-                                            <div class="stat-val" style="color: {srs_color}; font-weight: 700;">{srs_val:+.1f}%</div>
-                                        </div>
-                                        <div class="stat-item">
-                                            <div class="stat-lbl">STOP LOSS</div>
-                                            <div class="stat-val" style="color: #991b1b;">{stop_loss:.2f}</div>
-                                        </div>
-                                        <div class="stat-item">
-                                            <div class="stat-lbl">MTF CONF</div>
-                                            <div class="stat-val">{row['MTF_Score']}</div>
-                                        </div>
+                                    <div class="stat-item">
+                                        <div class="stat-lbl">STOP LOSS</div>
+                                        <div class="stat-val" style="color: #991b1b;">{stop_loss:.2f}</div>
+                                    </div>
+                                    <div class="stat-item">
+                                        <div class="stat-lbl">MTF CONF</div>
+                                        <div class="stat-val">{row['MTF_Score']}</div>
                                     </div>
                                 </div>
-                                """
-                                st.markdown(card_html, unsafe_allow_html=True)
-                                
-                                with st.expander(f"Details: {row['Ticker']}", expanded=False):
-                                    st.write(f"✅ {row['Why']}")
-                                    if row['Warnings']: st.warning(row['Warnings'])
-                                    if user_api_key:
-                                        if st.button(f"AI Plan: {row['Ticker']}", key=f"tab_unified_btn_{row['Ticker']}"):
-                                            st.markdown(generate_ai_trading_plan(row['Ticker'], batch_df[batch_df['Ticker']==row['Ticker']].iloc[0], user_api_key))
-                        
-                        with st.expander("🔍 View All Unified Candidates", expanded=False):
-                            st.dataframe(unified_df, use_container_width=True)
-                    else:
-                        st.info("ℹ️ ไม่พบหุ้นที่เข้าเกณฑ์ Unified")
-            
-            with report_tabs[1]: # Bottom Fishing
-                st.info("หุ้นที่ Oversold และเริ่มมีสัญญาณกลับตัว (Bottom Fishing)")
-                recovery_list = [row['Recovery_Data'] for _, row in batch_df.iterrows() if 'Recovery_Data' in row and row['Recovery_Data'] is not None]
-                
-                if recovery_list:
-                    recovery_df = pd.DataFrame(recovery_list).sort_values('recovery_score', ascending=False)
-                    st.success(f"🎯 พบหุ้นที่มีโอกาสกลับตัว {len(recovery_df)} ตัว")
+                            </div>
+                            """
+                            st.markdown(card_html, unsafe_allow_html=True)
+                            
+                            with st.expander(f"Details: {row['Ticker']}", expanded=False):
+                                st.write(f"✅ {row['Why']}")
+                                if row['Warnings']: st.warning(row['Warnings'])
+                                if user_api_key:
+                                    if st.button(f"AI Plan: {row['Ticker']}", key=f"tab_unified_btn_{row['Ticker']}"):
+                                        st.markdown(generate_ai_trading_plan(row['Ticker'], batch_df[batch_df['Ticker']==row['Ticker']].iloc[0], user_api_key))
                     
-                    for idx, r_row in recovery_df.iterrows():
-                        r_dot_color = "#8b5cf6" 
-                        r_sig_bg = "#f5f3ff"; r_sig_fg = "#5b21b6"
-                        reasons_html = "".join([f'<div style="font-size: 0.75rem; color: #5b21b6; margin-bottom: 2px;">• {reason}</div>' for reason in r_row['reasons']])
-                        
-                        # Compact Card for Recovery
-                        act_sig = r_row.get('actual_signal', 'N/A')
-                        act_strat = r_row.get('actual_strategy', 'N/A')
-                        
-                        r_card_html = f"""<div class="compact-card"><div class="card-header"><div class="header-left"><div class="dot-indicator" style="background-color: {r_dot_color};"></div><div class="ticker-name">{r_row['ticker']}</div></div><div class="status-pill recovery">RECOVERY</div></div><div class="score-container"><div class="score-label">Score</div><div class="score-big">{r_row['recovery_score']}</div></div><div style="display: flex; flex-direction: column; gap: 4px;"><div class="signal-badge" style="background-color: {r_sig_bg}; color: {r_sig_fg};">OVERSOLD RECOVERY</div><div style="font-size: 0.75rem; font-weight: 600; color: #7c3aed;">Signal: {act_sig}</div><div style="font-size: 0.75rem; font-weight: 600; color: #4b5563;">Strategy: {act_strat}</div></div><div style="margin-top: 10px; padding: 6px; background-color: #fdfcff; border-radius: 8px; border: 1px dashed #ddd6fe;">{reasons_html}</div><div class="stats-grid"><div class="stat-item"><div class="stat-lbl">RSI</div><div class="stat-val">{r_row['rsi']:.1f}</div></div><div class="stat-item"><div class="stat-lbl">PRICE</div><div class="stat-val">{r_row['price']:.2f}</div></div><div class="stat-item"><div class="stat-lbl">PIN BAR</div><div class="stat-val">{'✅' if r_row['is_pin'] else '❌'}</div></div></div></div>"""
-                        st.markdown(r_card_html, unsafe_allow_html=True)
-                        
-                        with st.expander(f"Recovery Analysis: {r_row['ticker']}"):
-                            st.write(f"🔍 **ทำไมถึงติดโผ:** {', '.join(r_row['reasons'])}")
-                            if user_api_key:
-                                if st.button(f"Recovery AI Plan: {r_row['ticker']}", key=f"tab_recovery_btn_{r_row['ticker']}"):
-                                    dummy_row = {'Last Price': r_row['price'], 'Signal': 'RECOVERY (OVERSOLD)', 'Bullish Score (%)': r_row['recovery_score'], 'Bearish Score (%)': 0, 'Score Diff': r_row['recovery_score'], 'MTF Conf': 'N/A', 'MTF Score': 0, 'Relative Vol': 1.0, 'Pattern Consensus (%)': 50}
-                                    st.markdown(generate_ai_trading_plan(r_row['ticker'], dummy_row, user_api_key))
+                    with st.expander("🔍 View All Unified Candidates", expanded=False):
+                        st.dataframe(unified_df, use_container_width=True)
                 else:
-                    st.info("ℹ️ ยังไม่พบหุ้น Oversold")
+                    st.info("ℹ️ ไม่พบหุ้นที่เข้าเกณฑ์ Unified")
+        
+        with main_tabs[1]: # Bottom Fishing
+            st.info("หุ้นที่ Oversold และเริ่มมีสัญญาณกลับตัว (Bottom Fishing)")
+            recovery_list = [row['Recovery_Data'] for _, row in batch_df.iterrows() if 'Recovery_Data' in row and row['Recovery_Data'] is not None]
             
-            with report_tabs[2]: # Market Breadth
-                st.subheader(f"📊 Market Breadth: หุ้นบวก {pos_count} | หุ้นลบ {neg_count}")
-                if 'Signal' in batch_df.columns:
-                    sig_counts = batch_df['Signal'].value_counts().reset_index()
-                    st.dataframe(sig_counts, use_container_width=True)
-
-        with main_tabs[1]: # Research Lab
-            lab_tabs = st.tabs(["🎯 Hit Rate Accuracy", "🤖 AI Insights", "🔍 Missed Opportunities", "📈 Performance Summary", "💎 SILENT ACCUM Insight"])
-            
-            if supabase:
-                try:
-                    # Get labeled data from Supabase
-                    response = supabase.table("scan_results") \
-                        .select("*") \
-                        .not_.is_("outcome_label", "null") \
-                        .order("id", desc=True) \
-                        .limit(200) \
-                        .execute()
-                    labeled_df = pd.DataFrame(response.data)
-                except Exception as e:
-                    st.error(f"Error fetching research data: {e}")
-                    labeled_df = pd.DataFrame()
-
-                with lab_tabs[0]: # Hit Rate Accuracy
-                    st.info("🎯 การวัดผลความแม่นยำแยกตามประเภทของสัญญาณ (Signal Type)")
-                    if not labeled_df.empty:
-                        # Calculate Win Rate per Signal Type
-                        sig_perf = labeled_df.groupby('signal_type').agg(
-                            Total_Signals=('outcome_label', 'count'),
-                            Wins=('outcome_label', lambda x: (x == 'Win').sum())
-                        )
-                        sig_perf['Win Rate (%)'] = (sig_perf['Wins'] / sig_perf['Total_Signals']) * 100
-                        sig_perf = sig_perf.sort_values('Win Rate (%)', ascending=False)
-                        
-                        perf_col1, perf_col2 = st.columns([2, 1])
-                        fig_perf = go.Figure(go.Bar(
-                            x=sig_perf.index, y=sig_perf['Win Rate (%)'],
-                            text=sig_perf['Win Rate (%)'].apply(lambda x: f"{x:.1f}%"),
-                            textposition='auto',
-                            marker=dict(color=sig_perf['Win Rate (%)'], colorscale='Greens', showscale=False)
-                        ))
-                        fig_perf.update_layout(height=350, margin=dict(t=20, b=20, l=20, r=20), yaxis_title="Win Rate (%)")
-                        perf_col1.plotly_chart(fig_perf, use_container_width=True)
-                        perf_col2.write("**Detailed Stats**")
-                        perf_col2.dataframe(sig_perf.style.format({'Win Rate (%)': '{:.1f}%'}), use_container_width=True)
-                    else:
-                        st.warning("ยังไม่มีข้อมูลที่ Label แล้ว กรุณารอ 3 วันทำการหลังการสแกน")
+            if recovery_list:
+                recovery_df = pd.DataFrame(recovery_list).sort_values('recovery_score', ascending=False)
+                st.success(f"🎯 พบหุ้นที่มีโอกาสกลับตัว {len(recovery_df)} ตัว")
                 
-                with lab_tabs[1]: # AI Insights
-                    st.info("🤖 วิเคราะห์ว่าตัวแปรไหนมีผลต่อการ 'Win' มากที่สุด")
-                    if len(labeled_df) >= 10:
-                        try:
-                            features = ['bull_score', 'bear_score', 'score_diff', 'relative_vol', 'rsi']
-                            X = labeled_df[features].fillna(0)
-                            y = labeled_df['outcome_label'].apply(lambda x: 1 if x == 'Win' else 0)
-                            rf = RandomForestClassifier(n_estimators=100, random_state=42)
-                            rf.fit(X, y)
-                            importance_df = pd.DataFrame({'Feature': features, 'Importance (%)': rf.feature_importances_ * 100}).sort_values('Importance (%)', ascending=False)
-                            
-                            fi_col1, fi_col2 = st.columns([2, 1])
-                            fig_fi = go.Figure(go.Bar(x=importance_df['Importance (%)'], y=importance_df['Feature'], orientation='h', marker=dict(color='royalblue')))
-                            fig_fi.update_layout(height=300, margin=dict(t=20, b=20, l=20, r=20), xaxis_title="Importance (%)")
-                            fi_col1.plotly_chart(fig_fi, use_container_width=True)
-                            
-                            win_only = labeled_df[labeled_df['outcome_label'] == 'Win']
-                            top_feature = importance_df.iloc[0]['Feature']
-                            avg_val = win_only[top_feature].mean()
-                            st.session_state['ai_insights_summary'] = f"ตัวแปรที่แม่นที่สุดคือ {top_feature} โดยหุ้นที่ Win ส่วนใหญ่มีค่าเฉลี่ยอยู่ที่ {avg_val:.2f}"
-                            fi_col2.info(f"**Key Takeaway:**\nตัวแปรที่แม่นที่สุดคือ **{top_feature}**\nหุ้นที่ Win ส่วนใหญ่มีค่าเฉลี่ย {top_feature} อยู่ที่ **{avg_val:.2f}**")
-                        except Exception as e:
-                            st.error(f"Error in AI Analysis: {e}")
-                    else:
-                        st.warning(f"ต้องการข้อมูลที่ Label แล้วอย่างน้อย 10 รายการ (ปัจจุบันมี {len(labeled_df)})")
-                
-                with lab_tabs[2]: # Missed Opportunities
-                    st.info("🔍 วิเคราะห์หุ้นที่ 'Win' แต่ระบบไม่ได้แนะนำเป็น High Conviction (คะแนน < 60)")
-                    if not labeled_df.empty:
-                        missed_df = labeled_df[(labeled_df['outcome_label'] == 'Win') & (labeled_df['conviction_score'] < 60)].copy()
-                        if not missed_df.empty:
-                            st.warning(f"พบหุ้น 'ม้ามืด' {len(missed_df)} รายการ")
-                            avg_rsi_missed = missed_df['rsi'].mean()
-                            avg_vol_missed = missed_df['relative_vol'].mean()
-                            common_signal = missed_df['signal_type'].mode().iloc[0] if not missed_df['signal_type'].empty else "N/A"
-                            ma1, ma2, ma3 = st.columns(3)
-                            ma1.metric("Avg RSI of Missed", f"{avg_rsi_missed:.1f}")
-                            ma2.metric("Avg Vol of Missed", f"{avg_vol_missed:.1f}x")
-                            ma3.metric("Common Signal", common_signal)
-                            st.dataframe(missed_df[['ticker', 'scan_date', 'signal_type', 'conviction_score', 'outcome_pct', 'rsi', 'relative_vol']], use_container_width=True)
-                        else:
-                            st.success("✨ ยังไม่พบหุ้นม้ามืดที่หลุดรอดไป")
-                    else:
-                        st.info("ยังไม่มีข้อมูลการวัดผล")
-                
-                with lab_tabs[3]: # Performance Summary
-                    st.info("📈 สรุปความแม่นยำของสูตรการสแกน T+3 Performance")
-                    try:
-                        response = supabase.table("trading_log") \
-                            .select("*") \
-                            .neq("status", "Pending") \
-                            .execute()
-                        verified_logs = pd.DataFrame(response.data)
-                        
-                        if not verified_logs.empty:
-                            accuracy = (len(verified_logs[verified_logs['status'] == 'Success']) / len(verified_logs)) * 100
-                            p1, p2, p3 = st.columns(3)
-                            p1.metric("Overall Accuracy", f"{accuracy:.1f}%")
-                            p2.metric("Avg Outcome (T+3)", f"{verified_logs['outcome_t3_pct'].mean():+.2f}%")
-                            p3.metric("Avg Max Drawdown", f"{verified_logs['max_dd_pct'].mean():+.2f}%")
-                            
-                            session_stats = verified_logs.groupby('session_flag').agg(Total=('status', 'count'), Wins=('status', lambda x: (x == 'Success').sum()))
-                            session_stats['Accuracy (%)'] = (session_stats['Wins'] / session_stats['Total']) * 100
-                            fig_session = go.Figure(go.Bar(x=session_stats.index, y=session_stats['Accuracy (%)'], text=session_stats['Accuracy (%)'].apply(lambda x: f"{x:.1f}%"), textposition='auto', marker=dict(color=session_stats['Accuracy (%)'], colorscale='Viridis')))
-                            fig_session.update_layout(height=300, margin=dict(t=20, b=20, l=20, r=20))
-                            st.plotly_chart(fig_session, use_container_width=True)
-                        else:
-                            st.info("กำลังรอรวบรวมข้อมูล T+3")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-                
-                with lab_tabs[4]: # SILENT ACCUM Insight
-                    st.info("💎 เจาะลึกพฤติกรรมหุ้น SILENT ACCUM: วัดระยะเวลาการฟื้นตัวและโอกาสชนะ")
-                    st.caption("📈 **Feature Insight:** วิเคราะห์สถิติย้อนหลังของสัญญาณ SILENT ACCUM เพื่อหาค่าเฉลี่ยจำนวนวันที่ราคามักจะ 'ระเบิด' (Days to Move) และอัตราการชนะ (Win Rate) ภายใน 5 วัน")
-                    sa_data = get_silent_accum_insights(limit=100)
+                for idx, r_row in recovery_df.iterrows():
+                    r_dot_color = "#8b5cf6" 
+                    r_sig_bg = "#f5f3ff"; r_sig_fg = "#5b21b6"
+                    reasons_html = "".join([f'<div style="font-size: 0.75rem; color: #5b21b6; margin-bottom: 2px;">• {reason}</div>' for reason in r_row['reasons']])
                     
-                    if sa_data is not None and not sa_data.empty:
-                        # 1. Overview Metrics
-                        avg_days = sa_data['days_to_move'].mean()
-                        win_rate_t5 = (sa_data['win_t5'].sum() / len(sa_data)) * 100
-                        
-                        m1, m2, m3 = st.columns(3)
-                        m1.metric("Avg. Days to Move", f"{avg_days:.1f} Days")
-                        m2.metric("Win Rate (T+5)", f"{win_rate_t5:.1f}%")
-                        m3.metric("Sample Size", f"{len(sa_data)} Signals")
-                        
-                        # 2. Distribution Chart
-                        st.write("### 📊 Distribution of Days to Move (+1% Upside)")
-                        dist_df = sa_data['days_to_move'].value_counts().sort_index().reset_index()
-                        dist_df.columns = ['Days', 'Frequency']
-                        
-                        fig_sa = go.Figure(go.Bar(
-                            x=dist_df['Days'], y=dist_df['Frequency'],
-                            text=dist_df['Frequency'], textposition='auto',
-                            marker=dict(color='#10b981')
-                        ))
-                        fig_sa.update_layout(height=350, margin=dict(t=20, b=20, l=20, r=20), xaxis_title="Trading Days", yaxis_title="Number of Cases")
-                        st.plotly_chart(fig_sa, use_container_width=True)
-                        
-                        # 3. Recent Cases
-                        st.write("### 📜 Recent SILENT ACCUM Cases")
-                        st.dataframe(sa_data[['ticker', 'signal_date', 'days_to_move', 'max_gain_t5']].head(10).style.format({'max_gain_t5': '{:.2f}%'}), use_container_width=True)
-                    else:
-                        st.warning("ยังไม่มีข้อมูล SILENT ACCUM เพียงพอสำหรับการวิเคราะห์ (ต้องการข้อมูลในฐานข้อมูลอย่างน้อย 1 รายการ)")
+                    # Compact Card for Recovery
+                    act_sig = r_row.get('actual_signal', 'N/A')
+                    act_strat = r_row.get('actual_strategy', 'N/A')
+                    
+                    r_card_html = f"""<div class="compact-card"><div class="card-header"><div class="header-left"><div class="dot-indicator" style="background-color: {r_dot_color};"></div><div class="ticker-name">{r_row['ticker']}</div></div><div class="status-pill recovery">RECOVERY</div></div><div class="score-container"><div class="score-label">Score</div><div class="score-big">{r_row['recovery_score']}</div></div><div style="display: flex; flex-direction: column; gap: 4px;"><div class="signal-badge" style="background-color: {r_sig_bg}; color: {r_sig_fg};">OVERSOLD RECOVERY</div><div style="font-size: 0.75rem; font-weight: 600; color: #7c3aed;">Signal: {act_sig}</div><div style="font-size: 0.75rem; font-weight: 600; color: #4b5563;">Strategy: {act_strat}</div></div><div style="margin-top: 10px; padding: 6px; background-color: #fdfcff; border-radius: 8px; border: 1px dashed #ddd6fe;">{reasons_html}</div><div class="stats-grid"><div class="stat-item"><div class="stat-lbl">RSI</div><div class="stat-val">{r_row['rsi']:.1f}</div></div><div class="stat-item"><div class="stat-lbl">PRICE</div><div class="stat-val">{r_row['price']:.2f}</div></div><div class="stat-item"><div class="stat-lbl">PIN BAR</div><div class="stat-val">{'✅' if r_row['is_pin'] else '❌'}</div></div></div></div>"""
+                    st.markdown(r_card_html, unsafe_allow_html=True)
+                    
+                    with st.expander(f"Recovery Analysis: {r_row['ticker']}"):
+                        st.write(f"🔍 **ทำไมถึงติดโผ:** {', '.join(r_row['reasons'])}")
+                        if user_api_key:
+                            if st.button(f"Recovery AI Plan: {r_row['ticker']}", key=f"tab_recovery_btn_{r_row['ticker']}"):
+                                dummy_row = {'Last Price': r_row['price'], 'Signal': 'RECOVERY (OVERSOLD)', 'Bullish Score (%)': r_row['recovery_score'], 'Bearish Score (%)': 0, 'Score Diff': r_row['recovery_score'], 'MTF Conf': 'N/A', 'MTF Score': 0, 'Relative Vol': 1.0, 'Pattern Consensus (%)': 50}
+                                st.markdown(generate_ai_trading_plan(r_row['ticker'], dummy_row, user_api_key))
+            else:
+                st.info("ℹ️ ยังไม่พบหุ้น Oversold")
+        
+        with main_tabs[2]: # Market Breadth
+            st.subheader(f"📊 Market Breadth: หุ้นบวก {pos_count} | หุ้นลบ {neg_count}")
+            if 'Signal' in batch_df.columns:
+                sig_counts = batch_df['Signal'].value_counts().reset_index()
+                st.dataframe(sig_counts, use_container_width=True)
 
-        with main_tabs[2]: # Admin & History
+        with main_tabs[3]: # Admin & History
             st.subheader("🏆 Leaderboard & History")
             # Sorting desired columns to the front
             cols = batch_df.columns.tolist()
             desired_order = ["Ticker", "Signal", "Pattern Consensus (%)", "Last Price", "Day High"]
             actual_order = [c for c in desired_order if c in batch_df.columns]
-            batch_df = batch_df[actual_order + [c for c in cols if c not in actual_order]]
+            display_df = batch_df[actual_order + [c for c in cols if c not in actual_order]]
             
             with st.expander("🔍 View Scanner Leaderboard (Table)", expanded=True):
-                st.dataframe(batch_df, use_container_width=True)
+                st.dataframe(display_df, use_container_width=True)
             
             st.divider()
             st.subheader("📜 Database & Labeling")
@@ -2331,6 +2260,41 @@ if st.session_state['batch_results'] is not None:
                 with st.spinner("Updating labels..."):
                     count = run_automated_labeling()
                     st.success(f"Updated {count} records!") if count > 0 else st.info("No new records to label.")
+
+            # Load labeled data for insights
+            labeled_df = pd.DataFrame()
+            if supabase:
+                try:
+                    response = supabase.table("scan_results") \
+                        .select("*") \
+                        .not_.is_("outcome_label", "null") \
+                        .order("id", desc=True) \
+                        .limit(200) \
+                        .execute()
+                    labeled_df = pd.DataFrame(response.data)
+                except:
+                    pass
+
+            with st.expander("🔬 Quant Research Insights", expanded=False):
+                if not labeled_df.empty:
+                    st.write("### 🎯 Hit Rate Accuracy")
+                    sig_perf = labeled_df.groupby('signal_type').agg(
+                        Total_Signals=('outcome_label', 'count'),
+                        Wins=('outcome_label', lambda x: (x == 'Win').sum())
+                    )
+                    sig_perf['Win Rate (%)'] = (sig_perf['Wins'] / sig_perf['Total_Signals']) * 100
+                    st.dataframe(sig_perf.style.format({'Win Rate (%)': '{:.1f}%'}), use_container_width=True)
+                    
+                    st.write("### 🤖 AI Feature Importance")
+                    features = ['bull_score', 'bear_score', 'score_diff', 'relative_vol', 'rsi']
+                    X = labeled_df[features].fillna(0)
+                    y = labeled_df['outcome_label'].apply(lambda x: 1 if x == 'Win' else 0)
+                    rf = RandomForestClassifier(n_estimators=100, random_state=42)
+                    rf.fit(X, y)
+                    importance_df = pd.DataFrame({'Feature': features, 'Importance (%)': rf.feature_importances_ * 100}).sort_values('Importance (%)', ascending=False)
+                    st.dataframe(importance_df, use_container_width=True)
+                else:
+                    st.info("ยังไม่มีข้อมูลการวิจัยเพียงพอ")
 
             with st.expander("View Saved Scan History", expanded=False):
                 if supabase:
@@ -2379,7 +2343,7 @@ if st.session_state['batch_results'] is not None:
                 styler.format({'Last Price': '{:.2f}', '% Change': '{:+.2f}%', 'Relative Vol': '{:.2f}x', 'MTF Score': '{:.0f}', 'Pattern Consensus (%)': '{:.1f}%', 'Bullish Score (%)': '{:.1f}%', 'Bearish Score (%)': '{:.1f}%', 'Score Diff': '{:.1f}'})
                 return styler
 
-            styled_export = style_batch(batch_df.style)
+            styled_export = style_batch(display_df.style)
             html_buffer = styled_export.to_html()
             
             ex1.checkbox("📸 Full-Length View (For PDF)", key="admin_full_view")
@@ -2387,8 +2351,42 @@ if st.session_state['batch_results'] is not None:
             full_html = f"<html><body><h2>🏆 SET100 Quant Report</h2>{html_buffer}</body></html>"
             ex2.download_button("📄 Download HTML Report", data=full_html, file_name=f"SET100_Report_{datetime.now(SET_TZ).strftime('%Y%m%d_%H%M')}.html", mime="text/html", use_container_width=True)
             
-            csv = batch_df.to_csv(index=False).encode('utf-8-sig')
+            csv = display_df.to_csv(index=False).encode('utf-8-sig')
             ex3.download_button("Excel/CSV Export", data=csv, file_name=f"SET100_Data_{datetime.now(SET_TZ).strftime('%Y%m%d_%H%M')}.csv", mime="text/csv", use_container_width=True)
+
+        with main_tabs[4]: # SILENT ACCUM Insight
+            st.info("💎 เจาะลึกพฤติกรรมหุ้น SILENT ACCUM: วัดระยะเวลาการฟื้นตัวและโอกาสชนะ")
+            st.caption("📈 **Feature Insight:** วิเคราะห์สถิติย้อนหลังของสัญญาณ SILENT ACCUM เพื่อหาค่าเฉลี่ยจำนวนวันที่ราคามักจะ 'ระเบิด' (Days to Move) และอัตราการชนะ (Win Rate) ภายใน 5 วัน")
+            sa_data = get_silent_accum_insights(limit=100)
+            
+            if sa_data is not None and not sa_data.empty:
+                # 1. Overview Metrics
+                avg_days = sa_data['days_to_move'].mean()
+                win_rate_t5 = (sa_data['win_t5'].sum() / len(sa_data)) * 100
+                
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Avg. Days to Move", f"{avg_days:.1f} Days")
+                m2.metric("Win Rate (T+5)", f"{win_rate_t5:.1f}%")
+                m3.metric("Sample Size", f"{len(sa_data)} Signals")
+                
+                # 2. Distribution Chart
+                st.write("### 📊 Distribution of Days to Move (+1% Upside)")
+                dist_df = sa_data['days_to_move'].value_counts().sort_index().reset_index()
+                dist_df.columns = ['Days', 'Frequency']
+                
+                fig_sa = go.Figure(go.Bar(
+                    x=dist_df['Days'], y=dist_df['Frequency'],
+                    text=dist_df['Frequency'], textposition='auto',
+                    marker=dict(color='#10b981')
+                ))
+                fig_sa.update_layout(height=350, margin=dict(t=20, b=20, l=20, r=20), xaxis_title="Trading Days", yaxis_title="Number of Cases")
+                st.plotly_chart(fig_sa, use_container_width=True)
+                
+                # 3. Recent Cases
+                st.write("### 📜 Recent SILENT ACCUM Cases")
+                st.dataframe(sa_data[['ticker', 'signal_date', 'days_to_move', 'max_gain_t5']].head(10).style.format({'max_gain_t5': '{:.2f}%'}), use_container_width=True)
+            else:
+                st.warning("ยังไม่มีข้อมูล SILENT ACCUM เพียงพอสำหรับการวิเคราะห์")
                 
 # --- Sidebar: Strategy Builder ---
 st.sidebar.header("🛠 Quant Strategy Builder")
