@@ -1446,7 +1446,8 @@ def generate_unified_report(batch_df, regime):
             'Why': reasons,
             'Warnings': warnings,
             'Price': row['Last Price'],
-            'Intraday_History': list(past_signals)
+            'Intraday_History': list(past_signals),
+            'Sector_RS': sector_rs
         })
     
     # Sort by: 1. Signal Tier (1 is highest), 2. Conviction Score
@@ -2084,27 +2085,6 @@ if st.session_state['batch_results'] is not None:
             </style>
         """), unsafe_allow_html=True)
 
-        # --- SIGNALS BY CATEGORY ---
-        if 'Signal' in batch_df.columns:
-            st.subheader("📊 Signals by Category")
-            st.caption("🌐 **Sector Relative Strength (SRS):** วิเคราะห์เปรียบเทียบหุ้นกับค่าเฉลี่ยของกลุ่มอุตสาหกรรม เพื่อหาหุ้นที่ 'แข็งแกร่งกว่าตลาด' (Outperformer)")
-            sig_counts = batch_df['Signal'].value_counts().reset_index()
-            sig_counts.columns = ['Signal', 'Count']
-            
-            # Use small columns for a compact overview
-            num_cols = min(len(sig_counts), 6)
-            s_cols = st.columns(num_cols)
-            for i, (_, s_row) in enumerate(sig_counts.iterrows()):
-                s_cols[i % num_cols].metric(s_row['Signal'], s_row['Count'])
-            
-            # --- SILENT ACCUM CLUSTER DETECTION ---
-            sa_count = sig_counts[sig_counts['Signal'] == 'SILENT ACCUM']['Count'].values[0] if 'SILENT ACCUM' in sig_counts['Signal'].values else 0
-            if sa_count >= 3:
-                st.info(f"🔵 **Smart Money Accumulation Cluster Detected!**  \nพบหุ้น SET100 ติดสัญญาณ `SILENT ACCUM` พร้อมกัน **{sa_count} ตัว**  \n*แนวโน้ม: ตลาดมีโอกาสเกิด Reversal ขาขึ้นในระยะสั้น (Confidence: High)*")
-                st.caption("💡 **Feature Insight:** ระบบตรวจพบการเก็บของพร้อมกันในหลายตัว (Cluster) ซึ่งเป็นสัญญาณบ่งชี้ Market Breadth ว่าเงินทุนกำลังไหลเข้าสะสมหุ้นในกลุ่ม SET100")
-        
-        st.divider()
-
         # --- MAIN UI TABS ---
         main_tabs = st.tabs([
             "🚀 Unified Report", 
@@ -2174,6 +2154,22 @@ if st.session_state['batch_results'] is not None:
                                 if user_api_key:
                                     if st.button(f"AI Plan: {row['Ticker']}", key=f"tab_unified_btn_{row['Ticker']}"):
                                         st.markdown(generate_ai_trading_plan(row['Ticker'], batch_df[batch_df['Ticker']==row['Ticker']].iloc[0], user_api_key))
+                        
+                        st.divider()
+                        st.subheader("📋 ตารางสรุปรวม (Summary Table)")
+                        # Safe Column Selection
+                        u_cols = {
+                            'Ticker': 'Ticker', 
+                            'Conviction_Score': 'Score', 
+                            'Signal': 'Signal', 
+                            'Strategy': 'Strategy', 
+                            'Sector_RS': 'Sector RS', 
+                            'Stop_Loss': 'Stop Loss', 
+                            'Similarity': 'Pattern'
+                        }
+                        unified_summary = top_conviction[[c for c in u_cols.keys() if c in top_conviction.columns]].copy()
+                        unified_summary.rename(columns=u_cols, inplace=True)
+                        st.dataframe(unified_summary, use_container_width=True)
                     
                     with st.expander("🔍 View All Unified Candidates", expanded=False):
                         st.dataframe(unified_df, use_container_width=True)
@@ -2209,15 +2205,49 @@ if st.session_state['batch_results'] is not None:
                             if st.button(f"Recovery AI Plan: {r_row['ticker']}", key=f"tab_recovery_btn_{r_row['ticker']}"):
                                 dummy_row = {'Last Price': r_row['price'], 'Signal': 'RECOVERY (OVERSOLD)', 'Bullish Score (%)': r_row['recovery_score'], 'Bearish Score (%)': 0, 'Score Diff': r_row['recovery_score'], 'MTF Conf': 'N/A', 'MTF Score': 0, 'Relative Vol': 1.0, 'Pattern Consensus (%)': 50}
                                 st.markdown(generate_ai_trading_plan(r_row['ticker'], dummy_row, user_api_key))
+                
+                st.divider()
+                st.subheader("📋 ตารางสรุปรวม (Summary Table)")
+                # Safe Column Selection
+                b_cols = {
+                    'ticker': 'Ticker',
+                    'recovery_score': 'Score',
+                    'actual_signal': 'Signal',
+                    'rsi': 'RSI',
+                    'price': 'Price',
+                    'is_pin': 'Pin Bar'
+                }
+                fishing_summary = recovery_df[[c for c in b_cols.keys() if c in recovery_df.columns]].copy()
+                fishing_summary.rename(columns=b_cols, inplace=True)
+                st.dataframe(fishing_summary, use_container_width=True)
             else:
                 st.info("ℹ️ ยังไม่พบหุ้น Oversold")
         
         with main_tabs[2]: # Market Breadth
             st.subheader(f"📊 Market Breadth: หุ้นบวก {pos_count} | หุ้นลบ {neg_count}")
             st.caption("📈 **Market Breadth:** สรุปภาพรวมความแข็งแกร่งของตลาด SET100 ผ่านจำนวนหุ้นที่บวกและลบ เพื่อดูทิศทางกระแสเงินทุน (Money Flow)")
+            
+            # --- SIGNALS BY CATEGORY ---
             if 'Signal' in batch_df.columns:
+                st.divider()
+                st.markdown("### 📊 Signals by Category")
+                st.caption("🌐 **Sector Relative Strength (SRS):** วิเคราะห์เปรียบเทียบหุ้นกับค่าเฉลี่ยของกลุ่มอุตสาหกรรม เพื่อหาหุ้นที่ 'แข็งแกร่งกว่าตลาด' (Outperformer)")
                 sig_counts = batch_df['Signal'].value_counts().reset_index()
+                sig_counts.columns = ['Signal', 'Count']
+                
+                # Use small columns for a compact overview
+                num_cols = min(len(sig_counts), 6)
+                s_cols = st.columns(num_cols)
+                for i, (_, s_row) in enumerate(sig_counts.iterrows()):
+                    s_cols[i % num_cols].metric(s_row['Signal'], s_row['Count'])
+                
                 st.dataframe(sig_counts, use_container_width=True)
+                
+                # --- SILENT ACCUM CLUSTER DETECTION ---
+                sa_count = sig_counts[sig_counts['Signal'] == 'SILENT ACCUM']['Count'].values[0] if 'SILENT ACCUM' in sig_counts['Signal'].values else 0
+                if sa_count >= 3:
+                    st.info(f"🔵 **Smart Money Accumulation Cluster Detected!**  \nพบหุ้น SET100 ติดสัญญาณ `SILENT ACCUM` พร้อมกัน **{sa_count} ตัว**  \n*แนวโน้ม: ตลาดมีโอกาสเกิด Reversal ขาขึ้นในระยะสั้น (Confidence: High)*")
+                    st.caption("💡 **Feature Insight:** ระบบตรวจพบการเก็บของพร้อมกันในหลายตัว (Cluster) ซึ่งเป็นสัญญาณบ่งชี้ Market Breadth ว่าเงินทุนกำลังไหลเข้าสะสมหุ้นในกลุ่ม SET100")
 
         with main_tabs[3]: # Admin & History
             st.subheader("🏆 Leaderboard & History (Supabase)")
