@@ -27,41 +27,31 @@ st.set_page_config(page_title="Quant Strategy Station", layout="wide")
 
 # --- Password Protection ---
 def check_password():
-    """Returns True if the user had the correct password."""
     def password_entered():
-        """Checks whether a password entered by the user is correct."""
-        # Safety check for secrets access
-        actual_password = os.getenv("APP_PASSWORD", "admin1234")
-        try:
-            if "APP_PASSWORD" in st.secrets:
-                actual_password = st.secrets["APP_PASSWORD"]
-        except:
-            pass
-
-        if st.session_state.get("password", "") == actual_password:
+        user_input = st.session_state.get("password_input", "")
+        # Robust lookup from secrets or env, default to empty if not found
+        target_password = str(st.secrets.get("APP_PASSWORD", os.getenv("APP_PASSWORD", "admin1234"))).strip()
+        
+        if user_input.strip() == target_password:
             st.session_state["password_correct"] = True
-            if "password" in st.session_state:
-                del st.session_state["password"]
+            if "password_input" in st.session_state:
+                del st.session_state["password_input"]
         else:
             st.session_state["password_correct"] = False
 
-    if "password_correct" not in st.session_state:
-        # First run, show input for password.
-        st.text_input(
-            "Please enter the access password", type="password", on_change=password_entered, key="password"
-        )
-        st.info("💡 Tip: For first-time setup on Streamlit Cloud, add 'APP_PASSWORD' to your Secrets.")
-        return False
-    elif not st.session_state["password_correct"]:
-        # Password not correct, show input + error.
-        st.text_input(
-            "Please enter the access password", type="password", on_change=password_entered, key="password"
-        )
-        st.error("😕 Password incorrect")
-        return False
-    else:
-        # Password correct.
+    if st.session_state.get("password_correct", False):
         return True
+
+    st.text_input(
+        "Please enter the access password",
+        type="password",
+        on_change=password_entered,
+        key="password_input"
+    )
+    
+    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+        st.error("😕 Password incorrect")
+    return False
 
 if not check_password():
     st.stop()
