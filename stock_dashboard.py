@@ -38,9 +38,10 @@ def check_password():
         except:
             pass
 
-        if st.session_state["password"] == actual_password:
+        if st.session_state.get("password", "") == actual_password:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]
+            if "password" in st.session_state:
+                del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
