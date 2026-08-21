@@ -27,21 +27,23 @@ st.set_page_config(page_title="Quant Strategy Station", layout="wide")
 
 # --- Password Protection ---
 def check_password():
-    def password_entered():
-        user_input = st.session_state.get("password_input", "")
-        # Robust lookup from secrets or env, default to empty if not found
-        target_password = str(st.secrets.get("APP_PASSWORD", os.getenv("APP_PASSWORD", "admin1234"))).strip()
-        
-        if user_input.strip() == target_password:
-            st.session_state["password_correct"] = True
-            if "password_input" in st.session_state:
-                del st.session_state["password_input"]
-        else:
-            st.session_state["password_correct"] = False
-
+    # 1. ถ้าผ่านการล็อกอินอยู่แล้ว ให้ให้ผ่านทันที
     if st.session_state.get("password_correct", False):
         return True
 
+    # 2. ฟังก์ชันตรวจสอบเมื่อมีการกด Enter/ส่งข้อมูลในช่องรหัสผ่าน
+    def password_entered():
+        user_input = str(st.session_state.get("password_input", "")).strip()
+        target_password = str(st.secrets.get("APP_PASSWORD", os.getenv("APP_PASSWORD", "admin1234"))).strip()
+        
+        if user_input == target_password:
+            st.session_state["password_correct"] = True
+            st.session_state["password_error"] = False
+        else:
+            st.session_state["password_correct"] = False
+            st.session_state["password_error"] = True
+
+    # 3. แสดงฟอร์มกรอกรหัสผ่าน
     st.text_input(
         "Please enter the access password",
         type="password",
@@ -49,8 +51,10 @@ def check_password():
         key="password_input"
     )
     
-    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+    # 4. แสดง Error Message เฉพาะกรณีที่พิมพ์ผิดจริงๆ เท่านั้น
+    if st.session_state.get("password_error", False):
         st.error("😕 Password incorrect")
+        
     return False
 
 if not check_password():
