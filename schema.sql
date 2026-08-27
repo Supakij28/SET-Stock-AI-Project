@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS auto_scan_results (
     scan_date TEXT,
     scan_time TEXT,
     price DOUBLE PRECISION,
-    bull_score DOUBLE PRECISION,
+    score DOUBLE PRECISION,
     rsi DOUBLE PRECISION,
     is_recovery BOOLEAN,
     recovery_score DOUBLE PRECISION,

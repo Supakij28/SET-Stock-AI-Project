@@ -58,7 +58,7 @@ def is_market_open():
     # Check ^SET to detect holidays
     try:
         set_idx = yf.Ticker("^SET.BK").history(period="1d")
-        if set_idx.empty:
+        if set_idx.empty or len(set_idx) == 0:
             return False
         # Check if the data is from today (or very recent)
         last_date = set_idx.index[-1].astimezone(SET_TZ).date()
@@ -187,6 +187,10 @@ def run_scanner():
             )
             
             df = calculate_quant_indicators(df_raw)
+            if df is None or len(df) == 0:
+                print(f"⚠️ {ticker}: Not enough data after indicators. Skipping.")
+                continue
+
             bullish = get_pre_breakout_scanner(df, mode='bullish')
             
             score = 0
@@ -200,9 +204,9 @@ def run_scanner():
                 'ticker': ticker,
                 'scan_date': scan_date,
                 'scan_time': scan_time,
-                'price': df['Close'].iloc[-1],
-                'bull_score': score,
-                'rsi': df['RSI'].iloc[-1],
+                'price': float(df['Close'].iloc[-1]),
+                'score': score, # Changed from bull_score to score
+                'rsi': float(df['RSI'].iloc[-1]),
                 'is_recovery': True if recovery else False,
                 'recovery_score': recovery['recovery_score'] if recovery else 0
             }))
