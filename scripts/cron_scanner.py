@@ -11,6 +11,7 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 from dtaidistance import dtw
 from sklearn.preprocessing import StandardScaler
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
 
 # Load environment variables
@@ -162,6 +163,48 @@ def clean_record(record):
             cleaned[k] = v
     return cleaned
 
+def scan_single_ticker(ticker, scan_date, scan_time):
+    """Helper function to scan a single ticker for parallel execution."""
+    try:
+        # print(f"Scanning {ticker}...") # Reduced logging for parallel run
+        t = yq.Ticker(ticker)
+        df_raw = t.history(period="2y").reset_index()
+        if df_raw.empty: return None
+        
+        df_raw['date'] = pd.to_datetime(df_raw['date'])
+        df_raw = df_raw.set_index("date")[["close", "volume", "open", "high", "low"]].rename(
+            columns={"close": "Close", "volume": "Volume", "open": "Open", "high": "High", "low": "Low"}
+        )
+        
+        df = calculate_quant_indicators(df_raw)
+        if df is None or len(df) < 50:
+            return None
+
+        bullish = get_pre_breakout_scanner(df, mode='bullish')
+        
+        score = 0
+        if bullish:
+            best = bullish[0]
+            score = max(0, 100 - (best['dist'] * 20))
+        
+        recovery = get_recovery_signals(ticker, df)
+        
+        # Safe access to iloc[-1]
+        if len(df) > 0:
+            return clean_record({
+                'ticker': ticker,
+                'scan_date': scan_date,
+                'scan_time': scan_time,
+                'price': float(df['Close'].iloc[-1]),
+                'score': score,
+                'rsi': float(df['RSI'].iloc[-1]),
+                'is_recovery': True if recovery else False,
+                'recovery_score': recovery['recovery_score'] if recovery else 0
+            })
+    except Exception as e:
+        print(f"❌ Error scanning {ticker}: {e}")
+    return None
+
 def run_scanner():
     print(f"--- 🚀 Auto Market Scanner Started at {datetime.now(SET_TZ)} ---")
     
@@ -174,54 +217,22 @@ def run_scanner():
         print("⏸️ Market is closed or holiday. Skipping scan.")
         return
 
-    results = []
     now = datetime.now(SET_TZ)
     scan_date = now.strftime("%Y-%m-%d")
     scan_time = now.strftime("%H:%M:%S")
 
-    for ticker in SET100_TICKERS:
-        try:
-            print(f"Scanning {ticker}...")
-            t = yq.Ticker(ticker)
-            df_raw = t.history(period="2y").reset_index()
-            if df_raw.empty: continue
-            
-            df_raw['date'] = pd.to_datetime(df_raw['date'])
-            df_raw = df_raw.set_index("date")[["close", "volume", "open", "high", "low"]].rename(
-                columns={"close": "Close", "volume": "Volume", "open": "Open", "high": "High", "low": "Low"}
-            )
-            
-            df = calculate_quant_indicators(df_raw)
-            if df is None or len(df) < 50:
-                print(f"⚠️ {ticker}: Not enough data (len={len(df) if df is not None else 0}) after indicators. Skipping.")
-                continue
+    print(f"📡 Fetching and analyzing {len(SET100_TICKERS)} tickers in parallel...")
+    results = []
+    
+    # Use ThreadPoolExecutor for faster parallel scanning
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(scan_single_ticker, ticker, scan_date, scan_time): ticker for ticker in SET100_TICKERS}
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                results.append(res)
 
-            bullish = get_pre_breakout_scanner(df, mode='bullish')
-            
-            score = 0
-            if bullish:
-                best = bullish[0]
-                score = max(0, 100 - (best['dist'] * 20))
-            
-            recovery = get_recovery_signals(ticker, df)
-            
-            # Safe access to iloc[-1]
-            if len(df) > 0:
-                results.append(clean_record({
-                    'ticker': ticker,
-                    'scan_date': scan_date,
-                    'scan_time': scan_time,
-                    'price': float(df['Close'].iloc[-1]),
-                    'score': score,
-                    'rsi': float(df['RSI'].iloc[-1]),
-                    'is_recovery': True if recovery else False,
-                    'recovery_score': recovery['recovery_score'] if recovery else 0
-                }))
-            else:
-                print(f"⚠️ {ticker}: DataFrame empty after processing. Skipping.")
-            
-        except Exception as e:
-            print(f"❌ Error scanning {ticker}: {e}")
+    print(f"✅ Scan complete. Found {len(results)} valid results.")
 
     if results and supabase:
         try:
