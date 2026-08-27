@@ -192,8 +192,8 @@ def run_scanner():
             )
             
             df = calculate_quant_indicators(df_raw)
-            if df is None or len(df) == 0:
-                print(f"⚠️ {ticker}: Not enough data after indicators. Skipping.")
+            if df is None or len(df) < 50:
+                print(f"⚠️ {ticker}: Not enough data (len={len(df) if df is not None else 0}) after indicators. Skipping.")
                 continue
 
             bullish = get_pre_breakout_scanner(df, mode='bullish')
@@ -205,16 +205,20 @@ def run_scanner():
             
             recovery = get_recovery_signals(ticker, df)
             
-            results.append(clean_record({
-                'ticker': ticker,
-                'scan_date': scan_date,
-                'scan_time': scan_time,
-                'price': float(df['Close'].iloc[-1]),
-                'score': score, # Changed from bull_score to score
-                'rsi': float(df['RSI'].iloc[-1]),
-                'is_recovery': True if recovery else False,
-                'recovery_score': recovery['recovery_score'] if recovery else 0
-            }))
+            # Safe access to iloc[-1]
+            if len(df) > 0:
+                results.append(clean_record({
+                    'ticker': ticker,
+                    'scan_date': scan_date,
+                    'scan_time': scan_time,
+                    'price': float(df['Close'].iloc[-1]),
+                    'score': score,
+                    'rsi': float(df['RSI'].iloc[-1]),
+                    'is_recovery': True if recovery else False,
+                    'recovery_score': recovery['recovery_score'] if recovery else 0
+                }))
+            else:
+                print(f"⚠️ {ticker}: DataFrame empty after processing. Skipping.")
             
         except Exception as e:
             print(f"❌ Error scanning {ticker}: {e}")
