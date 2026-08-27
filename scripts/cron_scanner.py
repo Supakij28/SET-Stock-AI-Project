@@ -154,13 +154,22 @@ def get_recovery_signals(ticker, df):
     return None
 
 def clean_record(record):
-    """Clean record for JSON compliance."""
+    """Clean record for JSON compliance by converting to native Python types."""
     cleaned = {}
     for k, v in record.items():
-        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+        if pd.isna(v):
             cleaned[k] = None
+        elif isinstance(v, (bool, np.bool_)):
+            cleaned[k] = bool(v)
+        elif isinstance(v, (int, np.integer)):
+            cleaned[k] = int(v)
+        elif isinstance(v, (float, np.floating)):
+            if math.isinf(v) or math.isnan(v):
+                cleaned[k] = None
+            else:
+                cleaned[k] = float(v)
         else:
-            cleaned[k] = v
+            cleaned[k] = str(v)
     return cleaned
 
 def scan_single_ticker(ticker, scanned_at):
