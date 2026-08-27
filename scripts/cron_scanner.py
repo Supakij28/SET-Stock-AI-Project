@@ -261,7 +261,8 @@ def scan_single_ticker(ticker, scanned_at):
             'is_pinbar', 'is_silent_accum'
         ]
         
-        filtered_payload = {k: full_payload[k] for k in allowed_keys if k in full_payload}
+        # Ensure all keys are present, defaulting to None if missing
+        filtered_payload = {k: full_payload.get(k) for k in allowed_keys}
         return clean_record(filtered_payload)
 
     except Exception as e:
