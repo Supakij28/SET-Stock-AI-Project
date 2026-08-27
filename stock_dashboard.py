@@ -370,6 +370,34 @@ def fetch_latest_scan_results():
         print(f"Error fetching latest scan: {e}")
         return None, 0, 0
 
+def fetch_auto_scan_results():
+    """Retrieve the latest results from the auto_scan_results table."""
+    if not supabase:
+        return pd.DataFrame()
+    try:
+        # Get the latest scanned_at timestamp
+        latest_time = supabase.table("auto_scan_results") \
+            .select("scanned_at") \
+            .order("scanned_at", desc=True) \
+            .limit(1) \
+            .execute()
+            
+        if not latest_time.data:
+            return pd.DataFrame()
+            
+        last_ts = latest_time.data[0]['scanned_at']
+        
+        # Fetch all results for that timestamp
+        response = supabase.table("auto_scan_results") \
+            .select("*") \
+            .eq("scanned_at", last_ts) \
+            .execute()
+            
+        return pd.DataFrame(response.data)
+    except Exception as e:
+        print(f"Error fetching auto scan results: {e}")
+        return pd.DataFrame()
+
 def run_automated_labeling(days_forward=3, win_threshold=2.0):
     """
     Check unlabeled scan results and verify if they were Win or Loss using Supabase.
@@ -2087,6 +2115,7 @@ if st.session_state['batch_results'] is not None:
             "📊 Market Breadth", 
             "📜 Admin & History", 
             "💎 SILENT ACCUM Insight",
+            "🤖 Auto Market Scan Results (SET100)",
             "🛠️ Advanced Tools / More Features"
         ])
         
@@ -2364,7 +2393,76 @@ if st.session_state['batch_results'] is not None:
             else:
                 st.warning("ยังไม่มีข้อมูล SILENT ACCUM เพียงพอสำหรับการวิเคราะห์")
 
-        with main_tabs[5]: # Advanced Tools / More Features
+        with main_tabs[5]: # Auto Market Scan Results
+            st.info("🤖 Auto Market Scan Results (SET100)")
+            st.caption("🕒 **Auto Scanner:** ดึงผลการวิเคราะห์ล่าสุดจากระบบสแกนอัตโนมัติ (GitHub Actions) ที่รันทุก 30 นาทีในช่วงตลาดเปิด")
+            
+            auto_df = fetch_auto_scan_results()
+            
+            if not auto_df.empty:
+                # 1. Metric Summary
+                last_scan = pd.to_datetime(auto_df['scanned_at'].iloc[0]).astimezone(SET_TZ)
+                buy_count = len(auto_df[auto_df['signal'] == 'BUY'])
+                wait_count = len(auto_df[auto_df['signal'] == 'WAIT'])
+                
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Total Stocks", len(auto_df))
+                m2.metric("BUY Signals", buy_count)
+                m3.metric("WAIT Signals", wait_count)
+                m4.metric("Last Scan Time", last_scan.strftime("%H:%M:%S"))
+                
+                st.divider()
+                
+                # 2. Filters
+                f1, f2, f3 = st.columns([1, 1, 2])
+                sig_options = ["ALL"] + sorted(auto_df['signal'].unique().tolist())
+                sel_sig = f1.selectbox("Filter Signal", sig_options, key="auto_sig_filter")
+                
+                strat_options = ["ALL"] + sorted(auto_df['strategy'].unique().tolist())
+                sel_strat = f2.selectbox("Filter Strategy", strat_options, key="auto_strat_filter")
+                
+                search_ticker = f3.text_input("🔍 Ticker Search", "", key="auto_ticker_search").upper()
+                
+                # Apply Filters
+                filtered_auto = auto_df.copy()
+                if sel_sig != "ALL":
+                    filtered_auto = filtered_auto[filtered_auto['signal'] == sel_sig]
+                if sel_strat != "ALL":
+                    filtered_auto = filtered_auto[filtered_auto['strategy'] == sel_strat]
+                if search_ticker:
+                    filtered_auto = filtered_auto[filtered_auto['ticker'].str.contains(search_ticker)]
+                
+                # 3. Display Dataframe with Styling
+                def style_auto_scan(styler):
+                    def highlight_buy(row):
+                        return ['background-color: rgba(34, 197, 94, 0.15)' if row['signal'] == 'BUY' else '' for _ in row]
+                    
+                    styler.apply(highlight_buy, axis=1)
+                    styler.format({
+                        'close_price': '{:.2f}',
+                        'change_percent': '{:+.2f}%',
+                        'score': '{:.1f}',
+                        'rsi': '{:.1f}',
+                        'volume': '{:,.0f}'
+                    })
+                    return styler
+
+                st.subheader(f"📋 Scan Results ({len(filtered_auto)} stocks)")
+                if not filtered_auto.empty:
+                    # Reorder columns for readability
+                    display_cols = [
+                        'ticker', 'signal', 'score', 'strategy', 'close_price', 
+                        'change_percent', 'rsi', 'volume', 'sector', 
+                        'is_recovery', 'is_pinbar', 'is_silent_accum'
+                    ]
+                    actual_display = [c for c in display_cols if c in filtered_auto.columns]
+                    st.dataframe(style_auto_scan(filtered_auto[actual_display].style), use_container_width=True)
+                else:
+                    st.warning("ไม่พบข้อมูลตามเงื่อนไขที่กรอง")
+            else:
+                st.info("ℹ️ ยังไม่มีข้อมูลในระบบ Auto Scan (ตรวจสอบว่ารัน GitHub Actions หรือยัง)")
+
+        with main_tabs[6]: # Advanced Tools / More Features
             st.info("🛠️ Advanced Tools & Strategy Builder")
             st.caption("⚙️ **Advanced Features:** รวมเครื่องมือวิเคราะห์เชิงลึก เช่น การปรับจูน Parameter ด้วย AI, ระบบทดสอบย้อนหลัง (Backtest) และห้องทดลองรูปแบบราคา (Pattern Lab)")
             
