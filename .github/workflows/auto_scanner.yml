@@ -1,0 +1,32 @@
+name: Auto Market Scanner
+
+on:
+  schedule:
+    # Runs every 15 minutes during Thai market hours
+    # Thai Market: 10:00-12:30 (UTC 03:00-05:30) and 14:30-16:30 (UTC 07:30-09:30)
+    - cron: '*/15 3-5 * * 1-5'
+    - cron: '*/15 7-9 * * 1-5'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-level: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance yahooquery pandas numpy supabase python-dotenv dtaidistance scikit-learn pytz
+
+      - name: Run Market Scanner
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python scripts/cron_scanner.py
