@@ -163,10 +163,9 @@ def clean_record(record):
             cleaned[k] = v
     return cleaned
 
-def scan_single_ticker(ticker, scan_date, scan_time):
+def scan_single_ticker(ticker, scanned_at):
     """Helper function to scan a single ticker for parallel execution."""
     try:
-        # print(f"Scanning {ticker}...") # Reduced logging for parallel run
         t = yq.Ticker(ticker)
         df_raw = t.history(period="2y").reset_index()
         if df_raw.empty: return None
@@ -180,27 +179,82 @@ def scan_single_ticker(ticker, scan_date, scan_time):
         if df is None or len(df) < 50:
             return None
 
-        bullish = get_pre_breakout_scanner(df, mode='bullish')
+        # --- 1. Basic Price Action ---
+        c_open = df_raw['Open'].iloc[-1]
+        c_high = df_raw['High'].iloc[-1]
+        c_low = df_raw['Low'].iloc[-1]
+        c_close = df_raw['Close'].iloc[-1]
+        body_size = abs(c_close - c_open)
+        upper_wick = c_high - max(c_open, c_close)
+        lower_wick = min(c_open, c_close) - c_low
         
+        is_pinbar = lower_wick > (body_size * 1.5) and (c_close > c_open)
+        change_percent = ((c_close / df_raw['Close'].iloc[-2]) - 1) * 100 if len(df_raw) > 1 else 0
+
+        # --- 2. Advanced Signal Logic ---
+        bullish = get_pre_breakout_scanner(df, mode='bullish')
         score = 0
+        is_silent_accum = False
         if bullish:
             best = bullish[0]
             score = max(0, 100 - (best['dist'] * 20))
+            if 5 < score < 15 and change_percent > 0:
+                is_silent_accum = True
         
         recovery = get_recovery_signals(ticker, df)
+        is_recovery = True if recovery else False
         
-        # Safe access to iloc[-1]
-        if len(df) > 0:
-            return clean_record({
-                'ticker': ticker,
-                'scan_date': scan_date,
-                'scan_time': scan_time,
-                'price': float(df['Close'].iloc[-1]),
-                'score': score,
-                'rsi': float(df['RSI'].iloc[-1]),
-                'is_recovery': True if recovery else False,
-                'recovery_score': recovery['recovery_score'] if recovery else 0
-            })
+        signal = "WAIT"
+        strategy = "SWING"
+        
+        if is_silent_accum:
+            signal = "SILENT ACCUM"
+            strategy = "ACCUMULATION"
+        elif is_recovery:
+            signal = "RECOVERY"
+            strategy = "BOTTOM FISHING"
+        elif is_pinbar:
+            signal = "PIN BAR"
+            strategy = "REVERSAL"
+        elif score > 80:
+            signal = "BUY"
+            strategy = "BREAKOUT"
+
+        # --- 3. Sector Info ---
+        sector = "N/A"
+        try:
+            profile = t.summary_profile.get(ticker, {})
+            sector = profile.get('sector', 'N/A')
+        except:
+            pass
+
+        # --- 4. Prepare Payload ---
+        full_payload = {
+            'ticker': ticker,
+            'scanned_at': scanned_at,
+            'score': float(score),
+            'signal': signal,
+            'strategy': strategy,
+            'sector': sector,
+            'close_price': float(c_close),
+            'change_percent': float(change_percent),
+            'volume': float(df_raw['Volume'].iloc[-1]),
+            'rsi': float(df['RSI'].iloc[-1]),
+            'is_recovery': is_recovery,
+            'is_pinbar': is_pinbar,
+            'is_silent_accum': is_silent_accum
+        }
+
+        # [STRICT PAYLOAD FILTERING]
+        allowed_keys = [
+            'ticker', 'scanned_at', 'score', 'signal', 'strategy', 'sector',
+            'close_price', 'change_percent', 'volume', 'rsi', 'is_recovery',
+            'is_pinbar', 'is_silent_accum'
+        ]
+        
+        filtered_payload = {k: full_payload[k] for k in allowed_keys if k in full_payload}
+        return clean_record(filtered_payload)
+
     except Exception as e:
         print(f"❌ Error scanning {ticker}: {e}")
     return None
@@ -218,15 +272,14 @@ def run_scanner():
         return
 
     now = datetime.now(SET_TZ)
-    scan_date = now.strftime("%Y-%m-%d")
-    scan_time = now.strftime("%H:%M:%S")
+    scanned_at = now.isoformat()
 
     print(f"📡 Fetching and analyzing {len(SET100_TICKERS)} tickers in parallel...")
     results = []
     
     # Use ThreadPoolExecutor for faster parallel scanning
     with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(scan_single_ticker, ticker, scan_date, scan_time): ticker for ticker in SET100_TICKERS}
+        futures = {executor.submit(scan_single_ticker, ticker, scanned_at): ticker for ticker in SET100_TICKERS}
         for future in as_completed(futures):
             res = future.result()
             if res:
@@ -237,6 +290,7 @@ def run_scanner():
     if results and supabase:
         try:
             print(f"📤 Uploading {len(results)} results to Supabase table 'auto_scan_results'...")
+            # Upsert with strict payload filtering already applied in scan_single_ticker
             response = supabase.table("auto_scan_results").upsert(results).execute()
             
             if hasattr(response, 'data') and response.data:
