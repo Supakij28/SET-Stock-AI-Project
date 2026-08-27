@@ -165,7 +165,12 @@ def clean_record(record):
 def run_scanner():
     print(f"--- 🚀 Auto Market Scanner Started at {datetime.now(SET_TZ)} ---")
     
-    if not is_market_open():
+    # Check if this is a manual run (bypass time check)
+    is_manual = os.getenv("IS_MANUAL_RUN", "false").lower() == "true"
+    
+    if is_manual:
+        print("⚡ Manual Run Detected: Bypassing market time check.")
+    elif not is_market_open():
         print("⏸️ Market is closed or holiday. Skipping scan.")
         return
 
@@ -216,11 +221,21 @@ def run_scanner():
 
     if results and supabase:
         try:
-            print(f"📤 Uploading {len(results)} results to Supabase...")
-            supabase.table("auto_scan_results").upsert(results).execute()
-            print("✅ Successfully uploaded results!")
+            print(f"📤 Uploading {len(results)} results to Supabase table 'auto_scan_results'...")
+            response = supabase.table("auto_scan_results").upsert(results).execute()
+            
+            if hasattr(response, 'data') and response.data:
+                print(f"✅ Successfully uploaded {len(response.data)} records to Supabase!")
+            else:
+                print("✅ Upload completed (Check Supabase for verification).")
+                
         except Exception as e:
-            print(f"❌ Supabase Error: {e}")
+            print(f"❌ Supabase Error during upload: {e}")
+    else:
+        if not supabase:
+            print("⚠️ Supabase credentials not found. Results not uploaded.")
+        if not results:
+            print("ℹ️ No results found to upload.")
 
 if __name__ == "__main__":
     run_scanner()
