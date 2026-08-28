@@ -403,7 +403,10 @@ def fetch_ticker_combined_history(ticker, days=90):
     if not supabase:
         return pd.DataFrame()
     try:
-        start_date = (datetime.now(SET_TZ) - timedelta(days=days)).isoformat()
+        # Use start of day for query to be safe
+        now_th = datetime.now(SET_TZ)
+        start_dt = (now_th - timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
+        start_date = start_dt.isoformat()
         
         # 1. Fetch from scan_results
         res1 = supabase.table("scan_results") \
@@ -420,7 +423,7 @@ def fetch_ticker_combined_history(ticker, days=90):
                 'bull_score': 'score',
                 'price': 'close_price'
             })
-            df1['scanned_at'] = pd.to_datetime(df1['scanned_at'])
+            df1['scanned_at'] = pd.to_datetime(df1['scanned_at']).dt.tz_localize(None)
             df1['source'] = 'manual'
         
         # 2. Fetch from auto_scan_results
@@ -432,7 +435,7 @@ def fetch_ticker_combined_history(ticker, days=90):
             
         df2 = pd.DataFrame(res2.data)
         if not df2.empty:
-            df2['scanned_at'] = pd.to_datetime(df2['scanned_at'])
+            df2['scanned_at'] = pd.to_datetime(df2['scanned_at']).dt.tz_localize(None)
             df2['source'] = 'auto'
             
         # Combine
@@ -442,7 +445,8 @@ def fetch_ticker_combined_history(ticker, days=90):
             
         # Sort and deduplicate by date (keep last entry for each day)
         combined['date_only'] = combined['scanned_at'].dt.date
-        combined = combined.sort_values('scanned_at').drop_duplicates(subset=['date_only'], keep='last')
+        combined = combined.sort_values('scanned_at')
+        combined = combined.drop_duplicates(subset=['date_only'], keep='last')
         
         return combined.drop(columns=['date_only'])
     except Exception as e:
@@ -2531,15 +2535,27 @@ if st.session_state['batch_results'] is not None:
                             # Fetch signals from Supabase (Combined)
                             hist_signals = fetch_ticker_combined_history(sel_hist_ticker, days=90)
                             
-                            # --- 1. Normalize Dates for Matching ---
-                            hist_price['date_str'] = hist_price.index.strftime('%Y-%m-%d')
+                            # --- 1. Map Signals to Price Data (Robust Way) ---
+                            hist_price['signal'] = None
+                            hist_price['score'] = None
+                            hist_price['is_silent'] = False
+                            hist_price['strategy_val'] = ''
+                            hist_price['rsi_val'] = None
+                            hist_price['vol_val'] = None
+                            
                             if not hist_signals.empty:
-                                hist_signals['date_str'] = hist_signals['scanned_at'].dt.strftime('%Y-%m-%d')
-                                # --- 2. Merge Data ---
-                                plot_df = pd.merge(hist_price, hist_signals, on='date_str', how='left')
-                            else:
-                                plot_df = hist_price.copy()
-                                plot_df['signal'] = None
+                                hist_signals['date_only'] = pd.to_datetime(hist_signals['scanned_at']).dt.date
+                                for _, sig_row in hist_signals.iterrows():
+                                    sig_date = sig_row['date_only']
+                                    mask = hist_price.index.date == sig_date
+                                    if mask.any():
+                                        idx = hist_price.index[mask][0]
+                                        hist_price.at[idx, 'signal'] = sig_row.get('signal')
+                                        hist_price.at[idx, 'score'] = sig_row.get('score')
+                                        hist_price.at[idx, 'strategy_val'] = sig_row.get('strategy', '')
+                                        hist_price.at[idx, 'is_silent'] = sig_row.get('is_silent_accum', False) or sig_row.get('strategy') == 'SILENT ACCUM'
+                                        hist_price.at[idx, 'rsi_val'] = sig_row.get('rsi')
+                                        hist_price.at[idx, 'vol_val'] = sig_row.get('volume')
 
                             # Create Plotly Chart
                             fig_hist = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
@@ -2554,21 +2570,18 @@ if st.session_state['batch_results'] is not None:
                                 name="Price"
                             ), row=1, col=1)
                             
-                            # 2. Add Signal Markers (Loop through merged plot_df)
-                            for idx, row in plot_df.iterrows():
-                                if pd.isna(row.get('signal')) and not row.get('is_silent_accum'):
+                            # 2. Add Signal Markers
+                            for p_idx, row in hist_price.iterrows():
+                                sig_type = row['signal']
+                                is_silent = row['is_silent']
+                                if not sig_type and not is_silent:
                                     continue
                                     
-                                p_idx = hist_price.index[idx]
                                 p_low = row['Low']
-                                sig_type = row['signal']
-                                strategy = row.get('strategy', '')
-                                is_silent = row.get('is_silent_accum', False) or strategy == 'SILENT ACCUM'
-                                
-                                # Hover Data
-                                h_rsi = f"RSI: {row['rsi']:.1f}" if not pd.isna(row.get('rsi')) else ""
-                                h_vol = f"Vol: {row['volume']:,.0f}" if not pd.isna(row.get('volume')) else ""
+                                h_rsi = f"RSI: {row['rsi_val']:.1f}" if not pd.isna(row['rsi_val']) else ""
+                                h_vol = f"Vol: {row['vol_val']:,.0f}" if not pd.isna(row['vol_val']) else ""
                                 h_info = f"<br>{h_rsi}<br>{h_vol}" if h_rsi or h_vol else ""
+                                score_val = row['score'] if not pd.isna(row['score']) else "N/A"
 
                                 if is_silent:
                                     fig_hist.add_trace(go.Scatter(
@@ -2576,7 +2589,7 @@ if st.session_state['batch_results'] is not None:
                                         mode='markers',
                                         marker=dict(symbol='circle', size=12, color='#3b82f6', line=dict(width=2, color='white')),
                                         name='SILENT ACCUM',
-                                        hovertemplate=f"<b>SILENT ACCUM</b><br>Score: {row['score']}{h_info}",
+                                        hovertemplate=f"<b>SILENT ACCUM</b><br>Score: {score_val}{h_info}",
                                         showlegend=False
                                     ), row=1, col=1)
                                 elif sig_type == 'BUY':
@@ -2585,7 +2598,7 @@ if st.session_state['batch_results'] is not None:
                                         mode='markers',
                                         marker=dict(symbol='triangle-up', size=15, color='#10b981'),
                                         name='BUY Signal',
-                                        hovertemplate=f"Signal: BUY<br>Score: {row['score']}{h_info}",
+                                        hovertemplate=f"Signal: BUY<br>Score: {score_val}{h_info}",
                                         showlegend=False
                                     ), row=1, col=1)
                                 elif sig_type in ['PIN BAR', 'RECOVERY']:
@@ -2595,7 +2608,7 @@ if st.session_state['batch_results'] is not None:
                                         mode='markers',
                                         marker=dict(symbol='circle', size=10, color=color),
                                         name=f'{sig_type} Signal',
-                                        hovertemplate=f"Signal: {sig_type}<br>Score: {row['score']}{h_info}",
+                                        hovertemplate=f"Signal: {sig_type}<br>Score: {score_val}{h_info}",
                                         showlegend=False
                                     ), row=1, col=1)
                             
