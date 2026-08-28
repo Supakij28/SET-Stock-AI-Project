@@ -128,8 +128,6 @@ def get_silent_accum_insights(limit=100):
             df1['signal_date'] = pd.to_datetime(df1['signal_date']).dt.date
         
         # 2. Fetch from auto_scan_results (Auto)
-        # Note: We fetch more rows to allow filtering for SILENT ACCUM locally if complex OR logic is needed,
-        # but Supabase supports simple OR.
         res2 = supabase.table("auto_scan_results") \
             .select("ticker, scanned_at, close_price, signal, strategy, is_silent_accum, score") \
             .gte("scanned_at", start_dt.isoformat()) \
@@ -137,17 +135,19 @@ def get_silent_accum_insights(limit=100):
             
         df2 = pd.DataFrame(res2.data)
         if not df2.empty:
-            # Apply broad SILENT ACCUM filter
-            df2 = df2[
-                (df2['strategy'] == 'SILENT ACCUM') | 
-                (df2['is_silent_accum'] == True) | 
-                (df2['signal'] == 'SILENT ACCUM')
-            ].copy()
+            # Robust Filtering: Handle case sensitivity and NaN values
+            is_silent_mask = (
+                (df2['strategy'].fillna('').str.upper() == 'SILENT ACCUM') | 
+                (df2['signal'].fillna('').str.upper() == 'SILENT ACCUM') | 
+                (df2['is_silent_accum'] == True)
+            )
+            df2 = df2[is_silent_mask].copy()
             
             if not df2.empty:
                 df2['source'] = 'auto'
-                df2 = df2.rename(columns={'scanned_at': 'signal_date', 'close_price': 'price'})
-                df2['signal_date'] = pd.to_datetime(df2['signal_date']).dt.date
+                # Ensure correct date conversion for Supabase TIMESTAMPTZ
+                df2['signal_date'] = pd.to_datetime(df2['scanned_at']).dt.date
+                df2 = df2.rename(columns={'close_price': 'price'})
         
         # Combine
         combined = pd.concat([df1, df2], ignore_index=True)
