@@ -2531,6 +2531,16 @@ if st.session_state['batch_results'] is not None:
                             # Fetch signals from Supabase (Combined)
                             hist_signals = fetch_ticker_combined_history(sel_hist_ticker, days=90)
                             
+                            # --- 1. Normalize Dates for Matching ---
+                            hist_price['date_str'] = hist_price.index.strftime('%Y-%m-%d')
+                            if not hist_signals.empty:
+                                hist_signals['date_str'] = hist_signals['scanned_at'].dt.strftime('%Y-%m-%d')
+                                # --- 2. Merge Data ---
+                                plot_df = pd.merge(hist_price, hist_signals, on='date_str', how='left')
+                            else:
+                                plot_df = hist_price.copy()
+                                plot_df['signal'] = None
+
                             # Create Plotly Chart
                             fig_hist = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
                             
@@ -2544,55 +2554,50 @@ if st.session_state['batch_results'] is not None:
                                 name="Price"
                             ), row=1, col=1)
                             
-                            # 2. Add Signal Markers
-                            if not hist_signals.empty:
-                                for _, s_row in hist_signals.iterrows():
-                                    s_dt = s_row['scanned_at'].astimezone(SET_TZ)
-                                    s_date = s_dt.date()
+                            # 2. Add Signal Markers (Loop through merged plot_df)
+                            for idx, row in plot_df.iterrows():
+                                if pd.isna(row.get('signal')) and not row.get('is_silent_accum'):
+                                    continue
                                     
-                                    if s_date in hist_price.index.date:
-                                        matching_dates = hist_price.index[hist_price.index.date == s_date]
-                                        if not matching_dates.empty:
-                                            price_idx = matching_dates[0]
-                                            p_low = hist_price.loc[price_idx, 'Low']
-                                            
-                                            sig_type = s_row['signal']
-                                            strategy = s_row.get('strategy', '')
-                                            is_silent = s_row.get('is_silent_accum', False) or strategy == 'SILENT ACCUM'
-                                            
-                                            # Hover Data
-                                            h_rsi = f"RSI: {s_row['rsi']:.1f}" if not pd.isna(s_row.get('rsi')) else ""
-                                            h_vol = f"Vol: {s_row['volume']:,.0f}" if not pd.isna(s_row.get('volume')) else ""
-                                            h_info = f"<br>{h_rsi}<br>{h_vol}" if h_rsi or h_vol else ""
+                                p_idx = hist_price.index[idx]
+                                p_low = row['Low']
+                                sig_type = row['signal']
+                                strategy = row.get('strategy', '')
+                                is_silent = row.get('is_silent_accum', False) or strategy == 'SILENT ACCUM'
+                                
+                                # Hover Data
+                                h_rsi = f"RSI: {row['rsi']:.1f}" if not pd.isna(row.get('rsi')) else ""
+                                h_vol = f"Vol: {row['volume']:,.0f}" if not pd.isna(row.get('volume')) else ""
+                                h_info = f"<br>{h_rsi}<br>{h_vol}" if h_rsi or h_vol else ""
 
-                                            if is_silent:
-                                                fig_hist.add_trace(go.Scatter(
-                                                    x=[price_idx], y=[p_low * 0.97],
-                                                    mode='markers',
-                                                    marker=dict(symbol='circle', size=12, color='#3b82f6', line=dict(width=2, color='white')),
-                                                    name='SILENT ACCUM',
-                                                    hovertemplate=f"<b>SILENT ACCUM</b><br>Score: {s_row['score']}{h_info}",
-                                                    showlegend=False
-                                                ), row=1, col=1)
-                                            elif sig_type == 'BUY':
-                                                fig_hist.add_trace(go.Scatter(
-                                                    x=[price_idx], y=[p_low * 0.98],
-                                                    mode='markers',
-                                                    marker=dict(symbol='triangle-up', size=15, color='#10b981'),
-                                                    name='BUY Signal',
-                                                    hovertemplate=f"Signal: BUY<br>Score: {s_row['score']}{h_info}",
-                                                    showlegend=False
-                                                ), row=1, col=1)
-                                            elif sig_type in ['PIN BAR', 'RECOVERY']:
-                                                color = '#f59e0b' if sig_type == 'PIN BAR' else '#a855f7'
-                                                fig_hist.add_trace(go.Scatter(
-                                                    x=[price_idx], y=[p_low * 0.98],
-                                                    mode='markers',
-                                                    marker=dict(symbol='circle', size=10, color=color),
-                                                    name=f'{sig_type} Signal',
-                                                    hovertemplate=f"Signal: {sig_type}<br>Score: {s_row['score']}{h_info}",
-                                                    showlegend=False
-                                                ), row=1, col=1)
+                                if is_silent:
+                                    fig_hist.add_trace(go.Scatter(
+                                        x=[p_idx], y=[p_low * 0.97],
+                                        mode='markers',
+                                        marker=dict(symbol='circle', size=12, color='#3b82f6', line=dict(width=2, color='white')),
+                                        name='SILENT ACCUM',
+                                        hovertemplate=f"<b>SILENT ACCUM</b><br>Score: {row['score']}{h_info}",
+                                        showlegend=False
+                                    ), row=1, col=1)
+                                elif sig_type == 'BUY':
+                                    fig_hist.add_trace(go.Scatter(
+                                        x=[p_idx], y=[p_low * 0.98],
+                                        mode='markers',
+                                        marker=dict(symbol='triangle-up', size=15, color='#10b981'),
+                                        name='BUY Signal',
+                                        hovertemplate=f"Signal: BUY<br>Score: {row['score']}{h_info}",
+                                        showlegend=False
+                                    ), row=1, col=1)
+                                elif sig_type in ['PIN BAR', 'RECOVERY']:
+                                    color = '#f59e0b' if sig_type == 'PIN BAR' else '#a855f7'
+                                    fig_hist.add_trace(go.Scatter(
+                                        x=[p_idx], y=[p_low * 0.98],
+                                        mode='markers',
+                                        marker=dict(symbol='circle', size=10, color=color),
+                                        name=f'{sig_type} Signal',
+                                        hovertemplate=f"Signal: {sig_type}<br>Score: {row['score']}{h_info}",
+                                        showlegend=False
+                                    ), row=1, col=1)
                             
                             # 3. RSI Subplot
                             fig_hist.add_trace(go.Scatter(
