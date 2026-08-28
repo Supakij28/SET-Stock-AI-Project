@@ -5,8 +5,10 @@ import numpy as np
 import os
 import requests
 import json
+import sys
 from datetime import datetime, time
 import pytz
+import holidays
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from dtaidistance import dtw
@@ -39,12 +41,29 @@ SET100_TICKERS = [
 ]
 
 def is_market_open():
-    """Check if Thai stock market is currently open."""
-    now = datetime.now(SET_TZ)
-    # Mon-Fri only
-    if now.weekday() >= 5:
-        return False
+    # ดึงเวลาปัจจุบันตามเขตเวลาประเทศไทย
+    tz = pytz.timezone('Asia/Bangkok')
+    now = datetime.now(tz)
     
+    # Check if this is a manual run (bypass time check)
+    is_manual = os.getenv("IS_MANUAL_RUN", "false").lower() == "true"
+    if is_manual:
+        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] ⚡ Manual Run Detected: Bypassing market time check.")
+        return True
+
+    # 1. ตรวจสอบวันเสาร์ (5) หรือวันอาทิตย์ (6)
+    if now.weekday() >= 5:
+        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] วันเสาร์-อาทิตย์ (ตลาดปิด)")
+        return False
+
+    # 2. ตรวจสอบวันหยุดนักขัตฤกษ์ของประเทศไทย
+    th_holidays = holidays.Thailand(years=now.year)
+    if now.date() in th_holidays:
+        holiday_name = th_holidays.get(now.date())
+        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] วันหยุดนักขัตฤกษ์: {holiday_name} (ตลาดปิด)")
+        return False
+
+    # 3. ตรวจสอบเวลาเปิด-ปิดตลาด (จันทร์-ศุกร์ 10.00-12.30 น. และ 14.30-16.30 น.)
     current_time = now.time()
     morning_open = time(10, 0)
     morning_close = time(12, 30)
@@ -52,22 +71,10 @@ def is_market_open():
     afternoon_close = time(16, 30)
     
     is_open_hours = (morning_open <= current_time <= morning_close) or (afternoon_open <= current_time <= afternoon_close)
-    
     if not is_open_hours:
+        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] อยู่นอกเวลาทำการตลาด (10:00-12:30, 14:30-16:30)")
         return False
-    
-    # Check ^SET to detect holidays
-    try:
-        set_idx = yf.Ticker("^SET.BK").history(period="1d")
-        if set_idx.empty or len(set_idx) == 0:
-            return False
-        # Check if the data is from today (or very recent)
-        last_date = set_idx.index[-1].astimezone(SET_TZ).date()
-        if last_date != now.date():
-            return False
-    except:
-        return False
-        
+
     return True
 
 def calculate_quant_indicators(df):
@@ -272,15 +279,6 @@ def scan_single_ticker(ticker, scanned_at):
 def run_scanner():
     print(f"--- 🚀 Auto Market Scanner Started at {datetime.now(SET_TZ)} ---")
     
-    # Check if this is a manual run (bypass time check)
-    is_manual = os.getenv("IS_MANUAL_RUN", "false").lower() == "true"
-    
-    if is_manual:
-        print("⚡ Manual Run Detected: Bypassing market time check.")
-    elif not is_market_open():
-        print("⏸️ Market is closed or holiday. Skipping scan.")
-        return
-
     now = datetime.now(SET_TZ)
     scanned_at = now.isoformat()
 
@@ -317,4 +315,9 @@ def run_scanner():
             print("ℹ️ No results found to upload.")
 
 if __name__ == "__main__":
+    if not is_market_open():
+        print("ยกเลิกการสแกนหุ้นเนื่องจากตลาดปิดทำการ")
+        sys.exit(0)
+
+    print("ตลาดเปิดทำการ เริ่มกระบวนการสแกนหุ้น...")
     run_scanner()
