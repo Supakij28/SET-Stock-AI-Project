@@ -204,6 +204,15 @@ def get_silent_accum_insights(limit=100):
                             'max_gain_t5': (test_df.iloc[:5]['High'].max() / entry_price - 1) * 100,
                             'win_t5': 1 if (test_df.iloc[:5]['High'].max() / entry_price - 1) * 100 >= 1.0 else 0
                         })
+                else:
+                    # Today's signal or no future data yet - Include as PENDING
+                    results.append({
+                        'ticker': ticker,
+                        'signal_date': sig['signal_date'],
+                        'days_to_move': None,
+                        'max_gain_t5': None,
+                        'win_t5': 0 # Default to 0 for win rate calculation until verified
+                    })
         
         # Final Sort: Ensure signal_date is descending for the report
         res_df = pd.DataFrame(results)
@@ -2493,7 +2502,15 @@ if st.session_state['batch_results'] is not None:
                 
                 # 3. Recent Cases
                 st.write("### 📜 Recent SILENT ACCUM Cases")
-                st.dataframe(sa_data[['ticker', 'signal_date', 'days_to_move', 'max_gain_t5']].head(10).style.format({'max_gain_t5': '{:.2f}%'}), use_container_width=True)
+                st.dataframe(
+                    sa_data[['ticker', 'signal_date', 'days_to_move', 'max_gain_t5']]
+                    .head(10)
+                    .style.format({
+                        'max_gain_t5': '{:.2f}%',
+                        'days_to_move': '{:.0f}'
+                    }, na_rep='Pending'), 
+                    use_container_width=True
+                )
             else:
                 st.warning("ยังไม่มีข้อมูล SILENT ACCUM เพียงพอสำหรับการวิเคราะห์")
 
