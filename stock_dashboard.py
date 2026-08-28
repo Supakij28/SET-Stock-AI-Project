@@ -2561,21 +2561,21 @@ if st.session_state['batch_results'] is not None:
                                         hist_price.loc[idx, 'score'] = sig_row.get('score')
                                         hist_price.loc[idx, 'strategy_val'] = sig_row.get('strategy', '')
                                         # Force boolean safely, handling NaN correctly
-                                         is_silent_accum_val = sig_row.get('is_silent_accum')
-                                         if pd.isna(is_silent_accum_val):
-                                             is_silent_accum_val = False
-                                         
-                                         signal_val = sig_row.get('signal', '')
-                                         strategy_val = sig_row.get('strategy', '')
-                                         if pd.isna(signal_val): signal_val = ''
-                                         if pd.isna(strategy_val): strategy_val = ''
-                                            
-                                         # Only mark as SILENT if it's a primary signal or explicitly flagged with a decent score
-                                         is_silent_val = (signal_val == 'SILENT ACCUM') or \
-                                                        (bool(is_silent_accum_val) and sig_row.get('score', 0) > 60) or \
-                                                        (strategy_val == 'SILENT ACCUM')
-                                         
-                                         hist_price.loc[idx, 'is_silent'] = is_silent_val
+                                        is_silent_accum_val = sig_row.get('is_silent_accum')
+                                        if pd.isna(is_silent_accum_val):
+                                            is_silent_accum_val = False
+                                        
+                                        signal_val = sig_row.get('signal', '')
+                                        strategy_val = sig_row.get('strategy', '')
+                                        if pd.isna(signal_val): signal_val = ''
+                                        if pd.isna(strategy_val): strategy_val = ''
+                                           
+                                        # Only mark as SILENT if it's a primary signal or explicitly flagged with a decent score
+                                        is_silent_val = (signal_val == 'SILENT ACCUM') or \
+                                                       (bool(is_silent_accum_val) and sig_row.get('score', 0) > 60) or \
+                                                       (strategy_val == 'SILENT ACCUM')
+                                        
+                                        hist_price.loc[idx, 'is_silent'] = is_silent_val
                                         hist_price.loc[idx, 'rsi_val'] = sig_row.get('rsi')
                                         hist_price.loc[idx, 'vol_val'] = sig_row.get('volume')
 
