@@ -398,6 +398,30 @@ def fetch_auto_scan_results():
         print(f"Error fetching auto scan results: {e}")
         return pd.DataFrame()
 
+def fetch_ticker_auto_scan_history(ticker, days=60):
+    """Retrieve historical scan signals for a specific ticker from Supabase."""
+    if not supabase:
+        return pd.DataFrame()
+    try:
+        # Get start date
+        start_date = (datetime.now(SET_TZ) - timedelta(days=days)).isoformat()
+        
+        response = supabase.table("auto_scan_results") \
+            .select("scanned_at, signal, strategy, score, close_price") \
+            .eq("ticker", ticker) \
+            .gte("scanned_at", start_date) \
+            .order("scanned_at", desc=False) \
+            .execute()
+        
+        if response.data:
+            df = pd.DataFrame(response.data)
+            df['scanned_at'] = pd.to_datetime(df['scanned_at'])
+            return df
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"Error fetching historical signals for {ticker}: {e}")
+        return pd.DataFrame()
+
 def run_automated_labeling(days_forward=3, win_threshold=2.0):
     """
     Check unlabeled scan results and verify if they were Win or Loss using Supabase.
@@ -2459,6 +2483,99 @@ if st.session_state['batch_results'] is not None:
                     st.dataframe(style_auto_scan(filtered_auto[actual_display].style), use_container_width=True)
                 else:
                     st.warning("ไม่พบข้อมูลตามเงื่อนไขที่กรอง")
+
+                # --- NEW SECTION: Historical Signal Analysis ---
+                st.divider()
+                st.subheader("📈 Stock Historical Signal Analysis")
+                st.caption("📊 **Historical Analysis:** เจาะลึกประวัติสัญญาณเทรดและแนวโน้มราคาย้อนหลัง 60 วัน")
+                
+                all_tickers = sorted(auto_df['ticker'].unique().tolist())
+                sel_hist_ticker = st.selectbox("เลือกหุ้นเพื่อดูประวัติสัญญาณ", all_tickers, key="auto_hist_ticker_select")
+                
+                if sel_hist_ticker:
+                    with st.spinner(f"Loading historical data for {sel_hist_ticker}..."):
+                        # Fetch price data
+                        hist_price_raw = get_stock_data(sel_hist_ticker)
+                        if hist_price_raw is not None:
+                            # Calculate indicators and get tail
+                            hist_price = calculate_quant_indicators(hist_price_raw, 14, 10, 50)
+                            hist_price = hist_price.tail(60)
+                            
+                            # Fetch signals from Supabase
+                            hist_signals = fetch_ticker_auto_scan_history(sel_hist_ticker, days=60)
+                            
+                            # Create Plotly Chart
+                            fig_hist = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+                            
+                            # 1. Candlestick
+                            fig_hist.add_trace(go.Candlestick(
+                                x=hist_price.index,
+                                open=hist_price['Open'],
+                                high=hist_price['High'],
+                                low=hist_price['Low'],
+                                close=hist_price['Close'],
+                                name="Price"
+                            ), row=1, col=1)
+                            
+                            # 2. Add Signal Markers
+                            if not hist_signals.empty:
+                                # Map signals to dates in price index
+                                for _, s_row in hist_signals.iterrows():
+                                    s_dt = s_row['scanned_at'].astimezone(SET_TZ)
+                                    s_date = s_dt.date()
+                                    
+                                    if s_date in hist_price.index.date:
+                                        # Find the matching index in price data
+                                        matching_dates = hist_price.index[hist_price.index.date == s_date]
+                                        if not matching_dates.empty:
+                                            price_idx = matching_dates[0]
+                                            p_low = hist_price.loc[price_idx, 'Low']
+                                            p_high = hist_price.loc[price_idx, 'High']
+                                            
+                                            sig_type = s_row['signal']
+                                            if sig_type == 'BUY':
+                                                fig_hist.add_trace(go.Scatter(
+                                                    x=[price_idx], y=[p_low * 0.98],
+                                                    mode='markers',
+                                                    marker=dict(symbol='triangle-up', size=15, color='#10b981'),
+                                                    name='BUY Signal',
+                                                    hovertemplate=f"Signal: BUY<br>Score: {s_row['score']}<br>Time: {s_dt.strftime('%H:%M')}",
+                                                    showlegend=False
+                                                ), row=1, col=1)
+                                            elif sig_type in ['PIN BAR', 'SILENT ACCUM', 'RECOVERY']:
+                                                color = '#f59e0b' if sig_type == 'PIN BAR' else '#3b82f6'
+                                                fig_hist.add_trace(go.Scatter(
+                                                    x=[price_idx], y=[p_low * 0.98],
+                                                    mode='markers',
+                                                    marker=dict(symbol='circle', size=10, color=color),
+                                                    name=f'{sig_type} Signal',
+                                                    hovertemplate=f"Signal: {sig_type}<br>Score: {s_row['score']}<br>Time: {s_dt.strftime('%H:%M')}",
+                                                    showlegend=False
+                                                ), row=1, col=1)
+                            
+                            # 3. RSI Subplot
+                            fig_hist.add_trace(go.Scatter(
+                                x=hist_price.index, y=hist_price['RSI'],
+                                name="RSI", line=dict(color='#8b5cf6', width=2)
+                            ), row=2, col=1)
+                            
+                            fig_hist.add_hline(y=70, line_dash="dash", line_color="#ef4444", row=2, col=1)
+                            fig_hist.add_hline(y=30, line_dash="dash", line_color="#10b981", row=2, col=1)
+                            
+                            # Dark Theme Style
+                            fig_hist.update_layout(
+                                height=650,
+                                template="plotly_dark",
+                                paper_bgcolor='rgba(0,0,0,0)',
+                                plot_bgcolor='rgba(0,0,0,0.05)',
+                                xaxis_rangeslider_visible=False,
+                                margin=dict(t=50, b=50, l=50, r=50),
+                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                            )
+                            
+                            st.plotly_chart(fig_hist, use_container_width=True)
+                        else:
+                            st.error(f"ไม่สามารถดึงข้อมูลราคาของ {sel_hist_ticker} ได้")
             else:
                 st.info("ℹ️ ยังไม่มีข้อมูลในระบบ Auto Scan (ตรวจสอบว่ารัน GitHub Actions หรือยัง)")
 
