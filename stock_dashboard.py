@@ -211,8 +211,17 @@ def get_silent_accum_insights(limit=100):
                         'signal_date': sig['signal_date'],
                         'days_to_move': None,
                         'max_gain_t5': None,
-                        'win_t5': 0 # Default to 0 for win rate calculation until verified
+                        'win_t5': 0
                     })
+            else:
+                # If get_stock_data fails (e.g., yfinance delay), still include the signal as PENDING
+                results.append({
+                    'ticker': ticker,
+                    'signal_date': sig['signal_date'],
+                    'days_to_move': None,
+                    'max_gain_t5': None,
+                    'win_t5': 0
+                })
         
         # Final Sort: Ensure signal_date is descending for the report
         res_df = pd.DataFrame(results)
@@ -2479,9 +2488,16 @@ if st.session_state['batch_results'] is not None:
             
             if sa_data is not None and not sa_data.empty:
                 # 1. Overview Metrics
-                avg_days = sa_data['days_to_move'].mean()
-                win_rate_t5 = (sa_data['win_t5'].sum() / len(sa_data)) * 100
+                # Only calculate metrics for rows that have days_to_move (historical)
+                hist_sa = sa_data[sa_data['days_to_move'].notna()]
                 
+                if not hist_sa.empty:
+                    avg_days = hist_sa['days_to_move'].mean()
+                    win_rate_t5 = (hist_sa['win_t5'].sum() / len(hist_sa)) * 100
+                else:
+                    avg_days = 0
+                    win_rate_t5 = 0
+                    
                 m1, m2, m3 = st.columns(3)
                 m1.metric("Avg. Days to Move", f"{avg_days:.1f} Days")
                 m2.metric("Win Rate (T+5)", f"{win_rate_t5:.1f}%")
