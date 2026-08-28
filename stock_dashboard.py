@@ -2536,12 +2536,18 @@ if st.session_state['batch_results'] is not None:
                             hist_signals = fetch_ticker_combined_history(sel_hist_ticker, days=90)
                             
                             # --- 1. Map Signals to Price Data (Robust Way) ---
-                            hist_price['signal'] = None
-                            hist_price['score'] = None
-                            hist_price['is_silent'] = False
-                            hist_price['strategy_val'] = ''
-                            hist_price['rsi_val'] = None
-                            hist_price['vol_val'] = None
+                            # Ensure fresh copy to avoid SettingWithCopy and strict dtype issues in new Pandas versions
+                            hist_price = hist_price.copy()
+                            
+                            # Initialize columns using assign for cleaner setup
+                            hist_price = hist_price.assign(
+                                signal=None,
+                                score=None,
+                                is_silent=False,
+                                strategy_val='',
+                                rsi_val=None,
+                                vol_val=None
+                            )
                             
                             if not hist_signals.empty:
                                 hist_signals['date_only'] = pd.to_datetime(hist_signals['scanned_at']).dt.date
@@ -2550,12 +2556,15 @@ if st.session_state['batch_results'] is not None:
                                     mask = hist_price.index.date == sig_date
                                     if mask.any():
                                         idx = hist_price.index[mask][0]
-                                        hist_price.at[idx, 'signal'] = sig_row.get('signal')
-                                        hist_price.at[idx, 'score'] = sig_row.get('score')
-                                        hist_price.at[idx, 'strategy_val'] = sig_row.get('strategy', '')
-                                        hist_price.at[idx, 'is_silent'] = sig_row.get('is_silent_accum', False) or sig_row.get('strategy') == 'SILENT ACCUM'
-                                        hist_price.at[idx, 'rsi_val'] = sig_row.get('rsi')
-                                        hist_price.at[idx, 'vol_val'] = sig_row.get('volume')
+                                        # Use .loc for safer assignment in strict environments
+                                        hist_price.loc[idx, 'signal'] = sig_row.get('signal')
+                                        hist_price.loc[idx, 'score'] = sig_row.get('score')
+                                        hist_price.loc[idx, 'strategy_val'] = sig_row.get('strategy', '')
+                                        # Force boolean to avoid dtype confusion
+                                        is_silent_val = bool(sig_row.get('is_silent_accum', False) or sig_row.get('strategy') == 'SILENT ACCUM')
+                                        hist_price.loc[idx, 'is_silent'] = is_silent_val
+                                        hist_price.loc[idx, 'rsi_val'] = sig_row.get('rsi')
+                                        hist_price.loc[idx, 'vol_val'] = sig_row.get('volume')
 
                             # Create Plotly Chart
                             fig_hist = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
