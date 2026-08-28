@@ -1,11 +1,9 @@
 name: Auto Market Scanner
 
 on:
-  push:
-    branches:
-      - main
   schedule:
-    - cron: '*/5 * * * *'
+    # รันรอบเช้า 03:30 UTC (10:30 น. ไทย) และ รอบบ่าย 08:30 UTC (15:30 น. ไทย)
+    - cron: '30 3,8 * * 1-5'
   workflow_dispatch:
 
 jobs:
