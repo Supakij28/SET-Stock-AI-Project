@@ -101,38 +101,81 @@ def init_log_db():
     """Verify Supabase connection for logs."""
     pass # Managed via Supabase
 
-def get_silent_accum_insights(limit=50):
+def get_silent_accum_insights(limit=100):
     """
-    Analyze historical SILENT ACCUM signals to find 'Time to Upside'.
+    Analyze historical SILENT ACCUM signals from both manual and auto scan results.
     """
     if not supabase:
         return None
         
     try:
-        # Get last N SILENT ACCUM signals from Supabase
-        response = supabase.table("scan_results") \
-            .select("ticker, scan_date, price, signal_type") \
+        # Calculate start date for 90 days history
+        now_th = datetime.now(SET_TZ)
+        start_dt = (now_th - timedelta(days=90)).replace(hour=0, minute=0, second=0, microsecond=0)
+        start_date_str = start_dt.strftime('%Y-%m-%d')
+        
+        # 1. Fetch from scan_results (Manual)
+        res1 = supabase.table("scan_results") \
+            .select("ticker, scan_date, price, signal_type, bull_score") \
             .eq("signal_type", "SILENT ACCUM") \
-            .order("id", desc=True) \
-            .limit(limit) \
+            .gte("scan_date", start_date_str) \
+            .execute()
+        
+        df1 = pd.DataFrame(res1.data)
+        if not df1.empty:
+            df1['source'] = 'manual'
+            df1 = df1.rename(columns={'scan_date': 'signal_date', 'signal_type': 'signal', 'bull_score': 'score'})
+            df1['signal_date'] = pd.to_datetime(df1['signal_date']).dt.date
+        
+        # 2. Fetch from auto_scan_results (Auto)
+        # Note: We fetch more rows to allow filtering for SILENT ACCUM locally if complex OR logic is needed,
+        # but Supabase supports simple OR.
+        res2 = supabase.table("auto_scan_results") \
+            .select("ticker, scanned_at, close_price, signal, strategy, is_silent_accum, score") \
+            .gte("scanned_at", start_dt.isoformat()) \
             .execute()
             
-        signals = pd.DataFrame(response.data)
+        df2 = pd.DataFrame(res2.data)
+        if not df2.empty:
+            # Apply broad SILENT ACCUM filter
+            df2 = df2[
+                (df2['strategy'] == 'SILENT ACCUM') | 
+                (df2['is_silent_accum'] == True) | 
+                (df2['signal'] == 'SILENT ACCUM')
+            ].copy()
+            
+            if not df2.empty:
+                df2['source'] = 'auto'
+                df2 = df2.rename(columns={'scanned_at': 'signal_date', 'close_price': 'price'})
+                df2['signal_date'] = pd.to_datetime(df2['signal_date']).dt.date
         
-        if signals.empty:
+        # Combine
+        combined = pd.concat([df1, df2], ignore_index=True)
+        if combined.empty:
             return None
             
+        # Deduplicate by ticker and date (keep latest source/entry)
+        combined = combined.sort_values(['signal_date', 'score'], ascending=[False, False])
+        combined = combined.drop_duplicates(subset=['ticker', 'signal_date'], keep='first')
+        
+        # Limit to requested number of signals
+        signals = combined.head(limit)
+        
         results = []
         for _, sig in signals.iterrows():
             ticker = sig['ticker']
-            signal_date = pd.to_datetime(sig['scan_date'])
+            signal_date = pd.to_datetime(sig['signal_date'])
             entry_price = sig['price']
             
             # Get historical data for this ticker
             df = get_stock_data(ticker)
             if df is not None and not df.empty:
                 # Filter data from signal date onwards
-                future_df = df[df.index >= signal_date].copy()
+                # Ensure df index is datetime and normalized
+                df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
+                signal_date_norm = signal_date.tz_localize(None).normalize()
+                
+                future_df = df[df.index >= signal_date_norm].copy()
                 if len(future_df) > 1:
                     # Skip the signal day itself for 'days to move' calculation
                     test_df = future_df.iloc[1:11] # Look up to 10 days ahead
@@ -144,7 +187,7 @@ def get_silent_accum_insights(limit=50):
                         if max_ret >= 1.0:
                             results.append({
                                 'ticker': ticker,
-                                'signal_date': sig['scan_date'],
+                                'signal_date': sig['signal_date'],
                                 'days_to_move': day_idx + 1,
                                 'max_gain_t5': (test_df.iloc[:5]['High'].max() / entry_price - 1) * 100 if len(test_df) >= 5 else None,
                                 'win_t5': 1 if (len(test_df) >= 5 and (test_df.iloc[:5]['High'].max() / entry_price - 1) * 100 >= 1.0) else 0
@@ -156,15 +199,21 @@ def get_silent_accum_insights(limit=50):
                         # Recorded as no move within 10 days, but still check T+5 win
                         results.append({
                             'ticker': ticker,
-                            'signal_date': sig['scan_date'],
+                            'signal_date': sig['signal_date'],
                             'days_to_move': None,
                             'max_gain_t5': (test_df.iloc[:5]['High'].max() / entry_price - 1) * 100,
                             'win_t5': 1 if (test_df.iloc[:5]['High'].max() / entry_price - 1) * 100 >= 1.0 else 0
                         })
         
-        return pd.DataFrame(results) if results else None
+        # Final Sort: Ensure signal_date is descending for the report
+        res_df = pd.DataFrame(results)
+        if not res_df.empty:
+            res_df = res_df.sort_values('signal_date', ascending=False)
+        return res_df if not res_df.empty else None
     except Exception as e:
         st.error(f"Error in SILENT ACCUM analysis: {e}")
+        import traceback
+        st.code(traceback.format_exc())
         return None
 
 def save_analysis_snapshot(batch_df, market_regime):
