@@ -211,10 +211,13 @@ def scan_single_ticker(ticker, scanned_at):
         bullish = get_pre_breakout_scanner(df, mode='bullish')
         score = 0
         is_silent_accum = False
+        rel_vol = df['RV'].iloc[-1]
+        
         if bullish:
             best = bullish[0]
             score = max(0, 100 - (best['dist'] * 20))
-            if 5 < score < 15 and change_percent > 0:
+            # SILENT ACCUM: Decent score but volume not yet exploding
+            if score > 65 and 0.8 <= rel_vol <= 1.3 and change_percent > 0:
                 is_silent_accum = True
         
         recovery = get_recovery_signals(ticker, df)
