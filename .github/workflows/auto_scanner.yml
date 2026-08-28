@@ -2,12 +2,8 @@ name: Auto Market Scanner
 
 on:
   schedule:
-    # Runs every 30 minutes during Thai market hours
-    # รอบเช้า (10:00 - 12:30 น. ไทย -> UTC 03:00 - 05:30)
-    - cron: '*/30 3-5 * * 1-5'
-    # รอบบ่าย (14:30 - 16:30 น. ไทย -> UTC 07:30 - 09:30)
-    - cron: '30 7 * * 1-5'
-    - cron: '0,30 8-9 * * 1-5'
+    # Runs every 30 minutes during Thai market hours (10:00 - 16:30 ICT -> 03:00 - 09:30 UTC)
+    - cron: '*/30 3-9 * * 1-5'
   workflow_dispatch: # Allow manual trigger
 
 jobs:
