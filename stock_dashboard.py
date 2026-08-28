@@ -114,6 +114,10 @@ def get_silent_accum_insights(limit=100):
         start_dt = (now_th - timedelta(days=90)).replace(hour=0, minute=0, second=0, microsecond=0)
         start_date_str = start_dt.strftime('%Y-%m-%d')
         
+        # Initialize empty dataframes
+        df1 = pd.DataFrame()
+        df2 = pd.DataFrame()
+        
         # 1. Fetch from scan_results (Manual)
         res1 = supabase.table("scan_results") \
             .select("ticker, scan_date, price, signal_type, bull_score") \
@@ -121,8 +125,8 @@ def get_silent_accum_insights(limit=100):
             .gte("scan_date", start_date_str) \
             .execute()
         
-        df1 = pd.DataFrame(res1.data)
-        if not df1.empty:
+        if res1.data:
+            df1 = pd.DataFrame(res1.data)
             df1['source'] = 'manual'
             df1 = df1.rename(columns={'scan_date': 'signal_date', 'signal_type': 'signal', 'bull_score': 'score'})
             df1['signal_date'] = pd.to_datetime(df1['signal_date']).dt.date
@@ -133,8 +137,8 @@ def get_silent_accum_insights(limit=100):
             .gte("scanned_at", start_dt.isoformat()) \
             .execute()
             
-        df2 = pd.DataFrame(res2.data)
-        if not df2.empty:
+        if res2.data:
+            df2 = pd.DataFrame(res2.data)
             # Robust Filtering: Handle case sensitivity and NaN values
             is_silent_mask = (
                 (df2['strategy'].fillna('').str.upper() == 'SILENT ACCUM') | 
@@ -355,9 +359,11 @@ def save_scan_result(data):
         if 'outcome_pct' in data: payload['outcome_pct'] = data['outcome_pct']
         if 'verified_date' in data: payload['verified_date'] = data['verified_date']
             
-        supabase.table("scan_results").insert(payload).execute()
+        res = supabase.table("scan_results").insert(payload).execute()
+        if hasattr(res, 'error') and res.error:
+            st.error(f"❌ Database Error ({data['ticker']}): {res.error}")
     except Exception as e:
-        print(f"Database Error: {e}")
+        st.error(f"⚠️ Failed to save scan result for {data.get('ticker', 'Unknown')}: {e}")
 
 def get_historical_scores(ticker, limit=5):
     """Retrieve historical scores for a ticker from Supabase."""
@@ -377,64 +383,133 @@ def get_historical_scores(ticker, limit=5):
         return pd.DataFrame()
 
 def fetch_latest_scan_results():
-    """Retrieve the most recent batch scan results from Supabase."""
+    """Retrieve the most recent batch scan results from either manual or auto tables."""
     if not supabase:
         return None, 0, 0
     try:
-        # Get the latest scan timestamp
-        latest = supabase.table("scan_results") \
+        # 1. Get latest from manual scan_results
+        latest_manual = supabase.table("scan_results") \
             .select("scan_date, scan_time") \
             .order("scan_date", desc=True) \
             .order("scan_time", desc=True) \
             .limit(1) \
             .execute()
             
-        if not latest.data:
-            return None, 0, 0
-            
-        date = latest.data[0]['scan_date']
-        time = latest.data[0]['scan_time']
-        
-        # Get all records for this timestamp
-        response = supabase.table("scan_results") \
-            .select("*") \
-            .eq("scan_date", date) \
-            .eq("scan_time", time) \
+        manual_dt = None
+        if latest_manual.data:
+            m = latest_manual.data[0]
+            try:
+                manual_dt = datetime.strptime(f"{m['scan_date']} {m['scan_time']}", "%Y-%m-%d %H:%M:%S")
+                manual_dt = SET_TZ.localize(manual_dt)
+            except:
+                manual_dt = None
+
+        # 2. Get latest from auto_scan_results
+        latest_auto = supabase.table("auto_scan_results") \
+            .select("scanned_at") \
+            .order("scanned_at", desc=True) \
+            .limit(1) \
             .execute()
             
-        if not response.data:
-            return None, 0, 0
+        auto_dt = None
+        if latest_auto.data:
+            auto_dt = pd.to_datetime(latest_auto.data[0]['scanned_at']).tz_convert(SET_TZ)
+
+        # 3. Decide which one to load (prefer newest)
+        use_auto = False
+        if auto_dt and manual_dt:
+            use_auto = auto_dt > manual_dt
+        elif auto_dt:
+            use_auto = True
             
-        # Reconstruct batch_df format
-        df = pd.DataFrame(response.data)
-        
-        # Mapping Supabase columns back to Dashboard display names
-        df = df.rename(columns={
-            'ticker': 'Ticker',
-            'price': 'Last Price',
-            'bull_score': 'Bullish Score (%)',
-            'bear_score': 'Bearish Score (%)',
-            'score_diff': 'Score Diff',
-            'signal_type': 'Signal',
-            'mtf_score': 'MTF Score',
-            'conviction_score': 'Conviction_Score',
-            'relative_vol': 'Relative Vol',
-            'rsi': 'RSI',
-            'market_regime': 'Market_Regime'
-        })
-        
-        # Ensure calculated columns exist
-        if 'Ticker' in df.columns:
-            # Add sector info
+        if use_auto:
+            # Fetch from auto_scan_results
+            response = supabase.table("auto_scan_results") \
+                .select("*") \
+                .eq("scanned_at", latest_auto.data[0]['scanned_at']) \
+                .execute()
+            
+            if not response.data: return None, 0, 0
+            
+            df = pd.DataFrame(response.data)
+            df = df.rename(columns={
+                'ticker': 'Ticker',
+                'close_price': 'Last Price',
+                'score': 'Bullish Score (%)',
+                'signal': 'Signal',
+                'strategy': 'Strategy',
+                'rsi': 'RSI',
+                'change_percent': '% Change',
+                'volume': 'Relative Vol' 
+            })
+            
+            # Map Sector
             df['Sector'] = df['Ticker'].map(SET100_SECTORS)
             
-        # Calculate counts
-        pos_count = len(df[df['Score Diff'] > 0])
-        neg_count = len(df[df['Score Diff'] < 0])
-        
-        return df, pos_count, neg_count
+            # Fill missing columns for UI compatibility
+            df['Bearish Score (%)'] = 0
+            df['Score Diff'] = df['Bullish Score (%)']
+            df['MTF Score'] = 0
+            df['MTF Conf'] = 'N/A'
+            df['ATC Risk (%)'] = 0
+            df['Expected Jump (%)'] = 0
+            df['Expected Drop (%)'] = 0
+            df['Outcome (3D)'] = 'N/A'
+            df['Max DD (3D)'] = '0.0%'
+            df['Last Update'] = auto_dt.strftime("%Y-%m-%d %H:%M")
+            df['Sector_RS'] = 0
+            df['Conviction_Score'] = df['Bullish Score (%)']
+            df['Why'] = 'Latest Auto Scan'
+            df['Warnings'] = ''
+            df['Vol Alert'] = 'Normal'
+            df['Score Velocity'] = 0
+            
+            pos_count = len(df[df['% Change'] > 0])
+            neg_count = len(df[df['% Change'] < 0])
+            return df, pos_count, neg_count
+        else:
+            # Fetch from manual scan_results
+            if not latest_manual.data: return None, 0, 0
+            
+            date = latest_manual.data[0]['scan_date']
+            time = latest_manual.data[0]['scan_time']
+            
+            response = supabase.table("scan_results") \
+                .select("*") \
+                .eq("scan_date", date) \
+                .eq("scan_time", time) \
+                .execute()
+                
+            if not response.data: return None, 0, 0
+                
+            df = pd.DataFrame(response.data)
+            df = df.rename(columns={
+                'ticker': 'Ticker',
+                'price': 'Last Price',
+                'bull_score': 'Bullish Score (%)',
+                'bear_score': 'Bearish Score (%)',
+                'score_diff': 'Score Diff',
+                'signal_type': 'Signal',
+                'mtf_score': 'MTF Score',
+                'conviction_score': 'Conviction_Score',
+                'relative_vol': 'Relative Vol',
+                'rsi': 'RSI',
+                'market_regime': 'Market_Regime'
+            })
+            
+            df['Sector'] = df['Ticker'].map(SET100_SECTORS)
+            df['Last Update'] = f"{date} {time[:5]}"
+            
+            # These columns might be missing in older manual results
+            if 'Score Diff' not in df.columns: df['Score Diff'] = df['Bullish Score (%)']
+            
+            pos_count = len(df[df['Score Diff'] > 0])
+            neg_count = len(df[df['Score Diff'] < 0])
+            
+            return df, pos_count, neg_count
+            
     except Exception as e:
-        print(f"Error fetching latest scan: {e}")
+        st.error(f"⚠️ Error loading latest scan results: {e}")
         return None, 0, 0
 
 def fetch_auto_scan_results():
@@ -1634,6 +1709,12 @@ def run_set100_batch_scan(tickers, target_date=None):
     progress_bar = st.progress(0)
     status_text = st.empty()
     
+    # NEW: Create a uniform timestamp for this batch run to allow grouping in DB
+    batch_now = datetime.now(SET_TZ)
+    batch_date = batch_now.strftime("%Y-%m-%d")
+    batch_time = batch_now.strftime("%H:%M:%S")
+    batch_update_str = batch_now.strftime("%Y-%m-%d %H:%M")
+    
     # Pre-fetch all sectors in bulk
     status_text.text("🔄 Initializing Sector Information...")
     try:
@@ -1879,16 +1960,15 @@ def run_set100_batch_scan(tickers, target_date=None):
                         outcome_data['verified_date'] = datetime.now(SET_TZ).strftime("%Y-%m-%d")
 
                 if not df_raw.empty:
-                    # If live scan (target_date is None), use current time. If historical, use candle date.
+                    # If live scan (target_date is None), use batch time. If historical, use candle date.
                     if target_date:
                         last_update_val = df_raw.index[-1].strftime("%Y-%m-%d %H:%M") if hasattr(df_raw.index[-1], 'strftime') else str(df_raw.index[-1])
                         db_date = df_raw.index[-1].strftime("%Y-%m-%d")
                         db_time = "00:00:00"
                     else:
-                        now_th = datetime.now(SET_TZ)
-                        last_update_val = now_th.strftime("%Y-%m-%d %H:%M")
-                        db_date = now_th.strftime("%Y-%m-%d")
-                        db_time = now_th.strftime("%H:%M:%S")
+                        last_update_val = batch_update_str
+                        db_date = batch_date
+                        db_time = batch_time
 
                     # --- NEW: Recovery Signal Check (Bottom Fishing) ---
                     recovery_data = get_recovery_signals(ticker, df)
