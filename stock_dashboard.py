@@ -630,19 +630,37 @@ def fetch_market_scan_results():
     if df_auto.empty and df_manual.empty:
         return pd.DataFrame()
         
-    combined = pd.concat([df_auto, df_manual], ignore_index=True)
+    # Standardize columns to avoid InvalidIndexError
+    cols = ['ticker', 'signal', 'score', 'strategy', 'close_price', 'change_percent', 'rsi', 'scanned_at', 'source']
+    
+    def clean_df(df):
+        if df.empty:
+            return pd.DataFrame(columns=cols)
+        # 1. Clean Duplicate Columns
+        df = df.loc[:, ~df.columns.duplicated()].copy()
+        # 2. Reset Index
+        df.reset_index(drop=True, inplace=True)
+        # 3. Ensure 'score' exists
+        if 'score' not in df.columns:
+            df['score'] = df.get('conviction_score', df.get('bull_score'))
+        # 4. Fill missing columns
+        for c in cols:
+            if c not in df.columns:
+                df[c] = None
+        return df[cols]
 
-    # 4. Standardize Score & Deduplicate
+    df_auto_clean = clean_df(df_auto)
+    df_manual_clean = clean_df(df_manual)
+    
+    combined = pd.concat([df_auto_clean, df_manual_clean], ignore_index=True)
+
+    # 4. Final Processing & Deduplicate
     if not combined.empty:
-        # Standardize score column
+        # Standardize score column again to be safe
         if 'conviction_score' in combined.columns:
-            combined['score'] = combined['conviction_score'].fillna(
-                combined['score'] if 'score' in combined.columns else combined['bull_score']
-            )
-        elif 'bull_score' in combined.columns and 'score' not in combined.columns:
-            combined['score'] = combined['bull_score']
+            combined['score'] = combined['conviction_score'].fillna(combined['score'])
         
-        # Ensure 'signal' exists (manual used signal_type -> signal)
+        # Ensure 'signal' exists
         if 'signal' not in combined.columns:
             combined['signal'] = 'WAIT'
 
