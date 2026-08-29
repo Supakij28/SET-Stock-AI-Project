@@ -11,10 +11,9 @@ import pytz
 import holidays
 from supabase import create_client, Client
 from dotenv import load_dotenv
-from dtaidistance import dtw
-from sklearn.preprocessing import StandardScaler
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
+from scanner_engine import core_strategy_scanner, calculate_conviction_score, get_market_regime, get_signal_performance_stats
 
 # Load environment variables
 load_dotenv()
@@ -77,89 +76,6 @@ def is_market_open():
 
     return True
 
-def calculate_quant_indicators(df):
-    d = df.copy()
-    # RSI
-    delta = d['Close'].diff()
-    gain = delta.clip(lower=0)
-    loss = delta.clip(upper=0).abs()
-    avg_gain = gain.ewm(span=14, adjust=False).mean()
-    avg_loss = loss.ewm(span=14, adjust=False).mean()
-    d['RSI'] = 100 - (100 / (1 + (avg_gain / (avg_loss + 1e-9))))
-    
-    # EMAs
-    d['EMA_Fast'] = d['Close'].ewm(span=10, adjust=False).mean()
-    d['EMA_Slow'] = d['Close'].ewm(span=50, adjust=False).mean()
-    
-    # Relative Volume (RV)
-    d['RV'] = d['Volume'] / (d['Volume'].rolling(20).mean() + 1e-9)
-    
-    # ATR
-    high_low = d['High'] - d['Low']
-    high_close = (d['High'] - d['Close'].shift()).abs()
-    low_close = (d['Low'] - d['Close'].shift()).abs()
-    ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    true_range = ranges.max(axis=1)
-    d['ATR'] = true_range.rolling(14).mean()
-    
-    return d.dropna()
-
-def get_pre_breakout_scanner(df, mode='bullish'):
-    if len(df) < 100: return None
-    df_scan = df.copy()
-    df_scan['Pct_Change'] = df_scan['Close'].pct_change()
-    df_scan['Volatility'] = df_scan['Close'].rolling(5).std()
-    
-    threshold = 0.05
-    lookback = 5
-    
-    if mode == 'bullish':
-        events = df_scan[df_scan['Pct_Change'] >= threshold].index.tolist()
-    else:
-        events = df_scan[df_scan['Pct_Change'] <= -threshold].index.tolist()
-    
-    patterns = []
-    scaler = StandardScaler()
-    
-    for b_date in events:
-        idx = df_scan.index.get_loc(b_date)
-        if idx < lookback: continue
-        pattern_data = df_scan.iloc[idx-lookback : idx]
-        p_norm = scaler.fit_transform(pattern_data[['Close']]).flatten()
-        v_norm = scaler.fit_transform(pattern_data[['Volume']]).flatten()
-        patterns.append({'date': b_date, 'p_norm': p_norm, 'v_norm': v_norm, 'jump_pct': df_scan['Pct_Change'].iloc[idx] * 100})
-    
-    if not patterns: return None
-    
-    current_5 = df_scan.iloc[-lookback:]
-    curr_p_norm = scaler.fit_transform(current_5[['Close']]).flatten()
-    curr_v_norm = scaler.fit_transform(current_5[['Volume']]).flatten()
-    
-    results = []
-    for p in patterns:
-        dist_p = dtw.distance(curr_p_norm, p['p_norm'], window=2)
-        dist_v = dtw.distance(curr_v_norm, p['v_norm'], window=2)
-        total_dist = (0.7 * dist_p) + (0.3 * dist_v)
-        results.append({'date': p['date'], 'jump': p['jump_pct'], 'dist': total_dist})
-    
-    return sorted(results, key=lambda x: x['dist'])[:3]
-
-def get_recovery_signals(ticker, df):
-    if df is None or len(df) < 20: return None
-    d = df.tail(20).copy()
-    rsi_curr = d['RSI'].iloc[-1]
-    rsi_prev = d['RSI'].iloc[-2]
-    is_oversold = rsi_curr < 35 or rsi_prev < 35
-    is_rsi_turning = rsi_curr > rsi_prev and rsi_curr > 30
-    
-    score = 0
-    if is_oversold: score += 40
-    if is_rsi_turning: score += 20
-    
-    if score >= 50:
-        return {'ticker': ticker, 'recovery_score': score, 'rsi': rsi_curr, 'price': d['Close'].iloc[-1]}
-    return None
-
 def clean_record(record):
     """Clean record for JSON compliance by converting to native Python types."""
     cleaned = {}
@@ -180,10 +96,11 @@ def clean_record(record):
     return cleaned
 
 def scan_single_ticker(ticker, scanned_at):
-    """Helper function to scan a single ticker for parallel execution."""
+    """Helper function to scan a single ticker using Unified Scanner Engine."""
     try:
         t = yq.Ticker(ticker)
-        df_raw = t.history(period="2y").reset_index()
+        # Use a longer history to match Manual Scan (stock_dashboard.py)
+        df_raw = t.history(start="2018-01-01").reset_index()
         if df_raw.empty: return None
         
         df_raw['date'] = pd.to_datetime(df_raw['date'])
@@ -191,89 +108,22 @@ def scan_single_ticker(ticker, scanned_at):
             columns={"close": "Close", "volume": "Volume", "open": "Open", "high": "High", "low": "Low"}
         )
         
-        df = calculate_quant_indicators(df_raw)
-        if df is None or len(df) < 50:
-            return None
+        # 🚀 Unified Scan Engine (Single Source of Truth)
+        # Return full scan_res to allow post-processing (SRS, Conviction) in run_scanner
+        scan_res = core_strategy_scanner(ticker, df_raw, target_date=None, mtf_check=True)
+        if not scan_res: return None
 
-        # --- 1. Basic Price Action ---
-        c_open = df_raw['Open'].iloc[-1]
-        c_high = df_raw['High'].iloc[-1]
-        c_low = df_raw['Low'].iloc[-1]
-        c_close = df_raw['Close'].iloc[-1]
-        body_size = abs(c_close - c_open)
-        upper_wick = c_high - max(c_open, c_close)
-        lower_wick = min(c_open, c_close) - c_low
-        
-        is_pinbar = lower_wick > (body_size * 1.5) and (c_close > c_open)
-        change_percent = ((c_close / df_raw['Close'].iloc[-2]) - 1) * 100 if len(df_raw) > 1 else 0
-
-        # --- 2. Advanced Signal Logic ---
-        bullish = get_pre_breakout_scanner(df, mode='bullish')
-        score = 0
-        is_silent_accum = False
-        rel_vol = df['RV'].iloc[-1]
-        
-        if bullish:
-            best = bullish[0]
-            score = max(0, 100 - (best['dist'] * 20))
-            # SILENT ACCUM: Decent score but volume not yet exploding
-            if score > 65 and 0.8 <= rel_vol <= 1.3 and change_percent > 0:
-                is_silent_accum = True
-        
-        recovery = get_recovery_signals(ticker, df)
-        is_recovery = True if recovery else False
-        
-        signal = "WAIT"
-        strategy = "SWING"
-        
-        if is_silent_accum:
-            signal = "SILENT ACCUM"
-            strategy = "ACCUMULATION"
-        elif is_recovery:
-            signal = "RECOVERY"
-            strategy = "BOTTOM FISHING"
-        elif is_pinbar:
-            signal = "PIN BAR"
-            strategy = "REVERSAL"
-        elif score > 80:
-            signal = "BUY"
-            strategy = "BREAKOUT"
-
-        # --- 3. Sector Info ---
+        # Fetch Sector Info
         sector = "N/A"
         try:
             profile = t.summary_profile.get(ticker, {})
             sector = profile.get('sector', 'N/A')
         except:
             pass
-
-        # --- 4. Prepare Payload ---
-        full_payload = {
-            'ticker': ticker,
-            'scanned_at': scanned_at,
-            'score': float(score),
-            'signal': signal,
-            'strategy': strategy,
-            'sector': sector,
-            'close_price': float(c_close),
-            'change_percent': float(change_percent),
-            'volume': float(df_raw['Volume'].iloc[-1]),
-            'rsi': float(df['RSI'].iloc[-1]),
-            'is_recovery': is_recovery,
-            'is_pinbar': is_pinbar,
-            'is_silent_accum': is_silent_accum
-        }
-
-        # [STRICT PAYLOAD FILTERING]
-        allowed_keys = [
-            'ticker', 'scanned_at', 'score', 'signal', 'strategy', 'sector',
-            'close_price', 'change_percent', 'volume', 'rsi', 'is_recovery',
-            'is_pinbar', 'is_silent_accum'
-        ]
         
-        # Ensure all keys are present, defaulting to None if missing
-        filtered_payload = {k: full_payload.get(k) for k in allowed_keys}
-        return clean_record(filtered_payload)
+        # Add sector to scan_res
+        scan_res['sector'] = sector
+        return scan_res
 
     except Exception as e:
         print(f"❌ Error scanning {ticker}: {e}")
@@ -298,11 +148,68 @@ def run_scanner():
 
     print(f"✅ Scan complete. Found {len(results)} valid results.")
 
-    if results and supabase:
+    if not results:
+        print("⚠️ No results to process.")
+        return
+
+    # --- Unified Post-Processing (SRS & Conviction Score) ---
+    print("📊 Calculating Sector Relative Strength (SRS) and Conviction Scores...")
+    df_results = pd.DataFrame(results)
+    
+    # 1. Calculate Sector Averages
+    sector_avgs = df_results.groupby('sector')['change_percent'].mean().to_dict()
+    
+    # 2. Market Regime & Performance Stats
+    regime, _ = get_market_regime()
+    perf_stats = get_signal_performance_stats(supabase)
+    
+    final_payloads = []
+    for _, row in df_results.iterrows():
+        ticker = row['ticker']
+        s_avg = sector_avgs.get(row['sector'], 0)
+        srs_val = row['change_percent'] - s_avg
+        
+        # Unified Conviction Score Calculation
+        conviction_score, strategy, reasons, warnings = calculate_conviction_score(
+            ticker, row['signal'], row.get('consensus', 0), 
+            row['mtf_score'], regime, perf_stats, 
+            row['rsi'], row['rel_vol'], row['score_velocity'],
+            sector_rs=srs_val, price_change=row['change_percent']
+        )
+        
+        # Prepare final payload for auto_scan_results
+        # Use conviction_score as the primary 'score' to match Unified Report
+        payload = {
+            'ticker': ticker,
+            'scanned_at': scanned_at,
+            'score': float(conviction_score),
+            'bull_score': float(row['bull_score']), # Keep original for reference if needed
+            'signal': row['signal'],
+            'strategy': strategy, # Use updated strategy from conviction engine
+            'sector': row['sector'],
+            'close_price': float(row['close_price']),
+            'change_percent': float(row['change_percent']),
+            'volume': float(row['volume']),
+            'rsi': float(row['rsi']),
+            'is_recovery': bool(row['is_recovery']),
+            'is_pinbar': bool(row['is_pinbar']),
+            'is_silent_accum': bool(row['is_silent_accum'])
+        }
+        
+        # [STRICT DB SCHEMA FILTERING]
+        allowed_keys = [
+            'ticker', 'scanned_at', 'score', 'signal', 'strategy', 'sector',
+            'close_price', 'change_percent', 'volume', 'rsi', 'is_recovery',
+            'is_pinbar', 'is_silent_accum'
+        ]
+        
+        filtered_payload = {k: payload.get(k) for k in allowed_keys}
+        final_payloads.append(clean_record(filtered_payload))
+
+    if final_payloads and supabase:
         try:
-            print(f"📤 Uploading {len(results)} results to Supabase table 'auto_scan_results'...")
-            # Upsert with strict payload filtering already applied in scan_single_ticker
-            response = supabase.table("auto_scan_results").upsert(results).execute()
+            print(f"📤 Uploading {len(final_payloads)} results to Supabase table 'auto_scan_results'...")
+            response = supabase.table("auto_scan_results").upsert(final_payloads).execute()
             
             if hasattr(response, 'data') and response.data:
                 print(f"✅ Successfully uploaded {len(response.data)} records to Supabase!")

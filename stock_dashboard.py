@@ -17,6 +17,17 @@ import pytz
 import textwrap
 from supabase import create_client, Client
 from dotenv import load_dotenv
+from scanner_engine import (
+    calculate_quant_indicators, 
+    get_pre_breakout_scanner, 
+    get_recovery_signals, 
+    core_strategy_scanner,
+    calculate_conviction_score,
+    get_market_regime as get_engine_market_regime,
+    validate_scanner_accuracy,
+    get_mtf_confluence,
+    get_signal_performance_stats
+)
 
 # Load .env for local development
 load_dotenv()
@@ -538,32 +549,74 @@ def fetch_latest_scan_results():
         st.error(f"⚠️ Error loading latest scan results: {e}")
         return None, 0, 0
 
-def fetch_auto_scan_results():
-    """Retrieve the latest results from the auto_scan_results table."""
+def fetch_market_scan_results():
+    """
+    [HYBRID MANDATE] Retrieve the latest results from both scan_results (Manual) 
+    and auto_scan_results (Auto) tables, choosing the newest for each ticker.
+    """
     if not supabase:
         return pd.DataFrame()
     try:
-        # Get the latest scanned_at timestamp
-        latest_time = supabase.table("auto_scan_results") \
-            .select("scanned_at") \
-            .order("scanned_at", desc=True) \
-            .limit(1) \
-            .execute()
-            
-        if not latest_time.data:
-            return pd.DataFrame()
-            
-        last_ts = latest_time.data[0]['scanned_at']
-        
-        # Fetch all results for that timestamp
-        response = supabase.table("auto_scan_results") \
+        # 1. Fetch from auto_scan_results (Auto)
+        # Get the latest 300 entries to cover SET100 across a few runs
+        auto_res = supabase.table("auto_scan_results") \
             .select("*") \
-            .eq("scanned_at", last_ts) \
+            .order("scanned_at", desc=True) \
+            .limit(300) \
             .execute()
+        
+        df_auto = pd.DataFrame(auto_res.data)
+        if not df_auto.empty:
+            df_auto['source'] = 'Auto'
+            df_auto['scanned_at'] = pd.to_datetime(df_auto['scanned_at'])
+            # Ensure standard column names
+            df_auto = df_auto.rename(columns={
+                'close_price': 'price',
+                'score': 'bull_score'
+            })
+
+        # 2. Fetch from scan_results (Manual)
+        manual_res = supabase.table("scan_results") \
+            .select("*") \
+            .order("scan_date", desc=True) \
+            .order("time", desc=True) \
+            .limit(300) \
+            .execute()
+        
+        df_manual = pd.DataFrame(manual_res.data)
+        if not df_manual.empty:
+            df_manual['source'] = 'Manual'
+            # Combine scan_date and time into scanned_at
+            df_manual['scanned_at'] = pd.to_datetime(df_manual['scan_date'] + ' ' + df_manual['time'])
+            # Ensure standard column names
+            df_manual = df_manual.rename(columns={
+                'signal_type': 'signal'
+            })
+            # Add missing columns with None for alignment
+            for col in ['strategy', 'change_percent', 'volume', 'sector', 'is_recovery', 'is_pinbar', 'is_silent_accum']:
+                if col not in df_manual.columns:
+                    df_manual[col] = None
+
+        # 3. Hybrid Aggregation
+        combined = pd.concat([df_auto, df_manual], ignore_index=True)
+        if combined.empty:
+            return pd.DataFrame()
+
+        # 4. Cleanup & Unification: Ensure final score is in 'score' column
+        # Prioritize conviction_score if available
+        if 'conviction_score' in combined.columns:
+            combined['score'] = combined['conviction_score'].fillna(combined['score'] if 'score' in combined.columns else combined['bull_score'])
+        elif 'bull_score' in combined.columns and 'score' not in combined.columns:
+            combined['score'] = combined['bull_score']
+
+        # 5. Deduplicate: Latest Scanned Timestamp per Ticker
+        combined = combined.sort_values(by='scanned_at', ascending=False)
+        combined = combined.drop_duplicates(subset=['ticker'], keep='first')
             
-        return pd.DataFrame(response.data)
+        return combined
+
     except Exception as e:
-        print(f"Error fetching auto scan results: {e}")
+        print(f"Error fetching hybrid scan results: {e}")
         return pd.DataFrame()
 
 def fetch_ticker_combined_history(ticker, days=90):
@@ -907,65 +960,6 @@ def get_stock_data(ticker):
     except:
         return None
 
-def get_mtf_confluence(ticker):
-    """
-    Perform Multi-Timeframe analysis (1H and 15M) to confirm Daily signals.
-    Improved Logic: Uses EMA Cross and RSI Momentum.
-    """
-    try:
-        session = requests.Session()
-        session.headers.update({'User-Agent': 'Mozilla/5.0'})
-        t = yq.Ticker(ticker, session=session)
-        
-        # 1. Check 1H Timeframe (Trend Confirmation)
-        df_1h = t.history(period='7d', interval='1h').reset_index()
-        if df_1h.empty: return "N/A", 0
-        
-        # Ensure 'close' column is used
-        close_1h = df_1h['close']
-        ema10_1h = close_1h.ewm(span=10, adjust=False).mean()
-        ema20_1h = close_1h.ewm(span=20, adjust=False).mean()
-        
-        is_1h_bull = ema10_1h.iloc[-1] > ema20_1h.iloc[-1]
-        is_1h_trending = close_1h.iloc[-1] > ema10_1h.iloc[-1]
-        
-        # 2. Check 15M Timeframe (Entry Timing)
-        df_15m = t.history(period='2d', interval='15m').reset_index()
-        if df_15m.empty: return "1H Only", 50 if is_1h_bull else 0
-        
-        close_15m = df_15m['close']
-        # Simple RSI for 15M
-        delta = close_15m.diff()
-        gain = delta.clip(lower=0)
-        loss = delta.clip(upper=0).abs()
-        avg_gain = gain.rolling(14).mean()
-        avg_loss = loss.rolling(14).mean()
-        rs = avg_gain / (avg_loss + 1e-9)
-        rsi_15m = 100 - (100 / (1 + rs))
-        
-        is_15m_recovering = rsi_15m.iloc[-1] > rsi_15m.iloc[-2] and rsi_15m.iloc[-1] > 45
-        is_15m_bull = close_15m.iloc[-1] > close_15m.ewm(span=10, adjust=False).mean().iloc[-1]
-        
-        # Calculate Confluence Score
-        score = 0
-        status = []
-        if is_1h_bull: 
-            score += 30
-            status.append("1H Bull")
-        if is_1h_trending:
-            score += 20
-            status.append("1H Trend")
-        if is_15m_recovering:
-            score += 30
-            status.append("15M RSI Up")
-        if is_15m_bull:
-            score += 20
-            status.append("15M Bull")
-            
-        final_status = " + ".join(status) if status else "No Confluence"
-        return final_status, score
-    except Exception as e:
-        return f"Error: {str(e)[:20]}", 0
 
 def generate_ai_trading_plan(ticker, row, api_key, ai_insights=None):
     """
@@ -1026,34 +1020,6 @@ def generate_ai_trading_plan(ticker, row, api_key, ai_insights=None):
         return response.text
     except Exception as e:
         return f"❌ AI Error: {str(e)}"
-
-def calculate_quant_indicators(df, rsi_period, ema_fast_len, ema_slow_len):
-    d = df.copy()
-    # RSI
-    delta = d['Close'].diff()
-    gain = delta.clip(lower=0)
-    loss = delta.clip(upper=0).abs()
-    avg_gain = gain.ewm(span=rsi_period, adjust=False).mean()
-    avg_loss = loss.ewm(span=rsi_period, adjust=False).mean()
-    d['RSI'] = 100 - (100 / (1 + (avg_gain / (avg_loss + 1e-9))))
-    
-    # EMAs
-    d['EMA_Fast'] = d['Close'].ewm(span=ema_fast_len, adjust=False).mean()
-    d['EMA_Slow'] = d['Close'].ewm(span=ema_slow_len, adjust=False).mean()
-    
-    # Relative Volume (RV)
-    d['RV'] = d['Volume'] / (d['Volume'].rolling(20).mean() + 1e-9)
-    
-    # ATR (Volatility Guard)
-    high_low = d['High'] - d['Low']
-    high_close = (d['High'] - d['Close'].shift()).abs()
-    low_close = (d['Low'] - d['Close'].shift()).abs()
-    ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    true_range = ranges.max(axis=1)
-    d['ATR'] = true_range.rolling(14).mean()
-    d['ATR_Avg_5'] = d['ATR'].rolling(5).mean()
-    
-    return d.dropna()
 
 # --- 2. Backtesting Engine ---
 def run_backtest(df, rsi_buy, rsi_sell, rv_min):
@@ -1164,410 +1130,10 @@ def get_dtw_projection(df, lookback=40, forecast=20):
         })
     return projections
 
-def get_pre_breakout_scanner(df, breakout_threshold=0.05, lookback=5, mode='bullish'):
-    """
-    Improved Scanner: Multivariate DTW + Slope Filter + Z-score Normalization.
-    - Price, Volume, and Volatility patterns are compared.
-    - Global Constraint (Sakoe-Chiba) applied to DTW.
-    """
-    if len(df) < 100: return None
-    
-    # 1. Prepare Data
-    df_scan = df.copy()
-    df_scan['Pct_Change'] = df_scan['Close'].pct_change()
-    df_scan['Volatility'] = df_scan['Close'].rolling(5).std() # Local volatility
-    
-    if mode == 'bullish':
-        events = df_scan[df_scan['Pct_Change'] >= breakout_threshold].index.tolist()
-    else:
-        events = df_scan[df_scan['Pct_Change'] <= -breakout_threshold].index.tolist()
-    
-    patterns = []
-    scaler = StandardScaler()
-    
-    for b_date in events:
-        idx = df_scan.index.get_loc(b_date)
-        if idx < lookback: continue
-        
-        # Extract 5 days BEFORE event
-        pattern_data = df_scan.iloc[idx-lookback : idx]
-        jump_price = df_scan['Close'].iloc[idx]
-        
-        # Multivariate Normalization (Z-score)
-        p_norm = scaler.fit_transform(pattern_data[['Close']]).flatten()
-        v_norm = scaler.fit_transform(pattern_data[['Volume']]).flatten()
-        volat_norm = scaler.fit_transform(pattern_data[['Volatility']].fillna(0)).flatten()
-        
-        jump_norm = scaler.fit(pattern_data[['Close']]).transform([[jump_price]])[0][0]
-        
-        ohlc_raw = df_scan.iloc[idx-lookback : idx+1][['Open', 'High', 'Low', 'Close']]
-        
-        patterns.append({
-            'date': b_date,
-            'p_norm': p_norm,
-            'v_norm': v_norm,
-            'volat_norm': volat_norm,
-            'jump_norm': jump_norm,
-            'jump_pct': df_scan['Pct_Change'].iloc[idx] * 100,
-            'ohlc_raw': ohlc_raw
-        })
-    
-    if not patterns: return None
-    
-    # 2. Current Pattern Extraction
-    current_5 = df_scan.iloc[-lookback:]
-    curr_p_norm = scaler.fit_transform(current_5[['Close']]).flatten()
-    curr_v_norm = scaler.fit_transform(current_5[['Volume']]).flatten()
-    curr_volat_norm = scaler.fit_transform(current_5[['Volatility']].fillna(0)).flatten()
-    
-    # Slope Filter: Recent 2 days slope check
-    # Instead of returning None, we'll just let the distance metric handle it
-    # or make it very lenient (e.g., not a massive drop)
-    slope_2d = (current_5['Close'].iloc[-1] - current_5['Close'].iloc[-3]) / current_5['Close'].iloc[-3]
-    if mode == 'bullish' and slope_2d < -0.02: return None # Only block if dropping > 2% in 2 days
-    
-    results = []
-    for p in patterns:
-        # Multivariate DTW with Sakoe-Chiba constraint (window=2)
-        dist_p = dtw.distance(curr_p_norm, p['p_norm'], window=2)
-        dist_v = dtw.distance(curr_v_norm, p['v_norm'], window=2)
-        dist_volat = dtw.distance(curr_volat_norm, p['volat_norm'], window=2)
-        
-        # Weighted Distance (Magnitude & Context)
-        # w1: Price(0.5), w2: Volume(0.3), w3: Volatility(0.2)
-        total_dist = (0.5 * dist_p) + (0.3 * dist_v) + (0.2 * dist_volat)
-        
-        # Scale historical OHLC for visualization
-        base_price = current_5['Open'].iloc[0]
-        hist_base = p['ohlc_raw']['Open'].iloc[0]
-        ohlc_scaled = p['ohlc_raw'] * (base_price / hist_base)
-        
-        results.append({
-            'date': p['date'],
-            'jump': p['jump_pct'],
-            'dist': total_dist,
-            'hist_p': p['p_norm'],
-            'hist_p_ext': np.append(p['p_norm'], p['jump_norm']),
-            'hist_v': p['v_norm'],
-            'hist_ohlc_scaled': ohlc_scaled
-        })
-    
-    best_results = sorted(results, key=lambda x: x['dist'])[:3]
-    return {
-        'curr_p': curr_p_norm,
-        'curr_v': curr_v_norm,
-        'curr_ohlc': current_5[['Open', 'High', 'Low', 'Close']],
-        'matches': best_results
-    }
 
-def validate_scanner_accuracy(df, winning_patterns, price_threshold=80.0, vol_threshold=70.0, lookback=5):
-    """
-    Advanced Validator: Multivariate (Price+Vol+Volatility) + Market Regime + Momentum.
-    """
-    if len(df) < 100 or not winning_patterns: return None
-    
-    scaler = StandardScaler()
-    df_scan = df.copy()
-    df_scan['Volatility'] = df_scan['Close'].rolling(5).std()
-    df_scan['EMA_Cross_Up'] = (df_scan['EMA_Fast'] > df_scan['EMA_Slow']) & (df_scan['EMA_Fast'].shift(1) <= df_scan['EMA_Slow'].shift(1))
-    df_scan['EMA_Slow_Slope'] = df_scan['EMA_Slow'].diff(3)
-    df_scan['Strong_Trend'] = (df_scan['Close'] > df_scan['EMA_Slow']) & (df_scan['EMA_Fast'] > df_scan['EMA_Slow']) & (df_scan['EMA_Slow_Slope'] > 0)
-    
-    # Calculate return over the NEXT 3 DAYS to see if it eventually jumps
-    # (More realistic for swing/ATC)
-    df_scan['Next_3D_Max_Return'] = df_scan['High'].rolling(3).max().shift(-3) / df_scan['Close'] - 1
-    
-    # Get Market Regime for Context Filter
-    regime, _ = get_market_regime()
-    
-    results = []
-    scan_start = max(lookback, len(df_scan) - 500) 
-    
-    for i in range(scan_start, len(df_scan) - 3): # -3 to allow 3-day forward window
-        # 1. Context Filter (Strong Trend or EMA Cross)
-        has_cross = df_scan['EMA_Cross_Up'].iloc[i-lookback : i].any()
-        is_trending = df_scan['Strong_Trend'].iloc[i-1]
-        if not (has_cross or is_trending): continue
-            
-        # 2. Market Regime Adjustment: Stricter in BEAR market
-        adj_p_threshold = price_threshold if regime == "BULL" else price_threshold + 5.0
-        adj_v_threshold = vol_threshold if regime == "BULL" else vol_threshold + 5.0
-            
-        window = df_scan.iloc[i-lookback : i]
-        # Slope check: Must not be a sharp drop
-        win_slope = (window['Close'].iloc[-1] - window['Close'].iloc[-3]) / window['Close'].iloc[-3]
-        if win_slope < -0.01: continue
-
-        win_p_norm = scaler.fit_transform(window[['Close']]).flatten()
-        win_v_norm = scaler.fit_transform(window[['Volume']]).flatten()
-        win_volat_norm = scaler.fit_transform(window[['Volatility']].fillna(0)).flatten()
-        
-        best_sim_p = 0
-        best_sim_v = 0
-        
-        for p in winning_patterns:
-            # Multivariate DTW with constraint
-            dist_p = dtw.distance(win_p_norm, p['price_pattern'], window=2)
-            dist_v = dtw.distance(win_v_norm, p['vol_pattern'], window=2)
-            
-            sim_p = max(0, 100 - (dist_p * 20))
-            sim_v = max(0, 100 - (dist_v * 20))
-            
-            if sim_p > best_sim_p: 
-                best_sim_p = sim_p
-                best_sim_v = sim_v
-        
-        # 3. Hybrid Filtering (Price + Vol + Trend)
-        if best_sim_p >= adj_p_threshold and best_sim_v >= adj_v_threshold:
-            next_ret = df_scan['Next_3D_Max_Return'].iloc[i-1]
-            overall_sim = (best_sim_p * 0.6) + (best_sim_v * 0.4)
-            
-            results.append({
-                'Date': df_scan.index[i-1],
-                'Overall Sim': overall_sim,
-                'Price Sim': best_sim_p,
-                'Vol Sim': best_sim_v,
-                'Next Day Return (%)': next_ret * 100,
-                'Result': '✅ Hit' if next_ret > 0.01 else '❌ Miss' # Win if > 1% gain in 3 days
-            })
-            
-    if not results: return None
-    
-    res_df = pd.DataFrame(results)
-    total = len(res_df)
-    hits_df = res_df[res_df['Result'] == '✅ Hit']
-    misses_df = res_df[res_df['Result'] == '❌ Miss']
-    
-    hit_rate = (len(hits_df) / total) * 100
-    avg_profit = hits_df['Next Day Return (%)'].mean() if not hits_df.empty else 0
-    avg_loss = misses_df['Next Day Return (%)'].mean() if not misses_df.empty else 0
-    expectancy = (hit_rate/100 * avg_profit) + ((1 - hit_rate/100) * avg_loss)
-    
-    return {
-        'summary': {
-            'Total Signals': total,
-            'Hit Rate': hit_rate,
-            'Avg Profit': avg_profit,
-            'Avg Loss': avg_loss,
-            'Expectancy': expectancy,
-            'RR Ratio': abs(avg_profit / avg_loss) if avg_loss != 0 else 0
-        },
-        'log': res_df.sort_values(by='Date', ascending=False)
-    }
 
 # --- Quant Helper Functions ---
-def calculate_conviction_score(ticker, signal, similarity, mtf_score, regime, perf_stats, rsi=50, rel_vol=1.0, score_velocity=0, sector_rs=0, price_change=0):
-    """
-    Calculate the conviction score for a stock based on various metrics.
-    Supports Strategy Classification and Sector Relative Strength (SRS).
-    """
-    # 1. Score Persistence
-    hist_scores = get_historical_scores(ticker, limit=5)
-    persistence = "Flat"
-    if not hist_scores.empty and len(hist_scores) >= 2:
-        latest = hist_scores['bull_score'].iloc[0]
-        prev = hist_scores['bull_score'].iloc[-1]
-        if latest > prev: persistence = "Rising 📈"
-        elif latest < prev: persistence = "Falling 📉"
-    
-    # 2. Global Signal Win Rate
-    sig_stats = perf_stats.get(signal, {})
-    sig_win_rate = sig_stats.get('Win_Rate', 0)
-    sig_total = sig_stats.get('Total', 0)
-    
-    formula_score = 0
-    reasons = []
-    warnings = []
-    strategy = "SWING" # Default strategy
-    
-    # --- Strategy Logic: Identify DAY TRADE (Potential Spike) ---
-    is_spike_potential = (score_velocity > 10) or (rel_vol > 1.8) or (signal in ['PRE-FLY', 'GOLDEN BUY'])
-    
-    if is_spike_potential:
-        strategy = "DAY TRADE (SPIKE)"
-        if rsi > 65:
-            warnings.append("⚠️ DAY TRADE Risk: High RSI (Spike & Drop potential)")
-        if persistence == "Falling 📉":
-            warnings.append("⚠️ DAY TRADE Risk: Weakening Momentum")
-    
-    # [BONUS] Market Regime
-    if regime == 'BULL': 
-        formula_score += 20
-        reasons.append("Market BULL (+20)")
-        
-    # [BONUS] Signal Quality
-    if signal in ['PRE-FLY', 'GOLDEN BUY']: 
-        formula_score += 30
-        reasons.append(f"Signal {signal} (+30)")
-    elif signal == 'SILENT ACCUM':
-        formula_score += 15
-        reasons.append("Signal Accumulation (+15)")
-        
-    # [BONUS] Sector Relative Strength (SRS)
-    # SRS = Price Change - Sector Avg.
-    # Logic: Leading Star (+20: หุ้นบวกสวนกลุ่มลบ), Outperformer (+10: >กลุ่ม 0.5%), Underperformer (-10), Laggard (-20)
-    sector_avg = price_change - sector_rs
-    
-    if price_change > 0 and sector_avg < 0:
-        formula_score += 20
-        reasons.append("Leading Star 🌟 (Up while Sector Down) (+20)")
-    elif sector_rs > 0.5:
-        formula_score += 10
-        reasons.append(f"Outperformer (RS: {sector_rs:+.1f}%) (+10)")
-    elif sector_rs < -1.0: # Strict Filter: Penalty increased
-        formula_score -= 25
-        warnings.append(f"Underperformer ⚠️ (RS: {sector_rs:+.1f}%) (-25)")
-        strategy = "WAIT (Weak Sector Flow)"
-    elif sector_rs < -0.5:
-        formula_score -= 10
-        warnings.append(f"Underperformer (RS: {sector_rs:+.1f}%) (-10)")
-    elif price_change < 0 and sector_avg > 0:
-        formula_score -= 20
-        warnings.append("Laggard ⚠️ (Down while Sector Up) (-20)")
 
-    # [BONUS] Database-Backed Signal Performance
-    if sig_total >= 5:
-        if sig_win_rate >= 60:
-            formula_score += 15
-            reasons.append(f"High Reliability Signal (+15)")
-        elif sig_win_rate < 40:
-            formula_score -= 25
-            warnings.append(f"Low Reliability Signal ({sig_win_rate:.1f}% Win Rate) (-25)")
-        
-    # [BONUS] Score Persistence
-    if persistence == "Rising 📈": 
-        formula_score += 20
-        reasons.append("Score Rising (+20)")
-        
-    # [BONUS] Pattern Similarity
-    if similarity >= 90: 
-        formula_score += 30
-        reasons.append("Pattern Match > 90% (+30)")
-    elif similarity >= 80:
-        formula_score += 15
-        reasons.append("Pattern Match > 80% (+15)")
-        
-    # [BONUS] MTF Confirmation
-    if mtf_score >= 80:
-        formula_score += 20
-        reasons.append("Strong MTF Conf (+20)")
-    elif mtf_score >= 60:
-        formula_score += 10
-        reasons.append("Moderate MTF Conf (+10)")
-
-    # [AUDIT INSIGHT] RSI Sweet Spot (40-55) - The "Dark Horse" Zone
-    if 40 <= rsi <= 55:
-        formula_score += 15
-        reasons.append("Audit: RSI Sweet Spot (+15)")
-
-    # [PENALTY] Overextended / Spike & Fade Protection
-    # If RSI is too high or price jumped too much today, it might be a trap
-    if rsi > 70:
-        formula_score -= 20
-        warnings.append("Overbought RSI (>70) (-20)")
-    if rsi > 80:
-        formula_score -= 30
-        warnings.append("Extreme Overbought RSI (>80) (-30)")
-
-    # [PENALTY] Risky Signals & Negative Persistence
-    if signal in ['WAIT', 'WAIT (DOWNTREND)', 'WAIT (BEARISH TRAP)', 'FADING MOMENTUM', 'CONFLICT (HIGH RISK)']:
-        formula_score -= 50
-        warnings.append(f"Neutral/Bearish Signal: {signal} (-50)")
-    
-    if persistence == "Falling 📉":
-        formula_score -= 15
-        warnings.append("Momentum is Weakening (-15)")
-
-    if signal == 'REJECTION WICK':
-        penalty = -60
-        if regime == 'BULL': penalty += 10
-        if rsi < 50: penalty += 25
-        if rsi > 70: penalty -= 40
-        if rel_vol > 1.8: penalty -= 20
-        
-        formula_score += penalty
-        if penalty < 0:
-            warnings.append(f"REJECTION WICK ({penalty})")
-        else:
-            reasons.append(f"Wick at Support/Neutral RSI ({penalty})")
-            
-    elif signal == 'PIN BAR (SUPPORT)':
-        formula_score += 25
-        reasons.append("Bullish Pin Bar at Support (+25)")
-            
-    elif signal == 'CONFLICT (HIGH RISK)':
-        formula_score -= 20
-        warnings.append("CONFLICT SIGNAL (-20)")
-        
-    return formula_score, strategy, reasons, warnings
-
-def get_recovery_signals(ticker, df):
-    """
-    Detects Bottom Fishing / Recovery signals for stocks that have been falling for a while.
-    Focuses on Oversold RSI and Downside Exhaustion.
-    """
-    if df is None or len(df) < 20:
-        return None
-    
-    d = df.tail(20).copy()
-    rsi_curr = d['RSI'].iloc[-1]
-    rsi_prev = d['RSI'].iloc[-2]
-    close_curr = d['Close'].iloc[-1]
-    
-    # 1. Oversold Check
-    is_oversold = rsi_curr < 35 or rsi_prev < 35
-    is_rsi_turning = rsi_curr > rsi_prev and rsi_curr > 30 # Turning up from bottom
-    
-    # 2. Downside Exhaustion (Price falling for at least 3 days)
-    # Check if last 3-5 days are mostly negative
-    recent_returns = d['Close'].pct_change().tail(5)
-    negative_days = (recent_returns < 0).sum()
-    is_exhausted = negative_days >= 3
-    
-    # 3. Bottoming Candlesticks
-    c_open = d['Open'].iloc[-1]
-    c_high = d['High'].iloc[-1]
-    c_low = d['Low'].iloc[-1]
-    c_close = d['Close'].iloc[-1]
-    body_size = abs(c_close - c_open)
-    lower_wick = min(c_open, c_close) - c_low
-    is_bullish_pin = lower_wick > (body_size * 1.5) and c_close > c_low
-    
-    # 4. Volume Spike at Bottom
-    avg_vol = d['Volume'].rolling(10).mean().iloc[-1]
-    curr_vol = d['Volume'].iloc[-1]
-    is_vol_spike = curr_vol > (avg_vol * 1.5)
-    
-    # Calculate Recovery Score (0-100)
-    score = 0
-    reasons = []
-    
-    if is_oversold: 
-        score += 40
-        reasons.append("Oversold (RSI < 35)")
-    if is_rsi_turning:
-        score += 20
-        reasons.append("RSI Turning Up")
-    if is_exhausted:
-        score += 15
-        reasons.append("Price Exhaustion (3+ Days Drop)")
-    if is_bullish_pin:
-        score += 15
-        reasons.append("Bullish Pin Bar (Support)")
-    if is_vol_spike:
-        score += 10
-        reasons.append("Volume Spike at Bottom")
-        
-    if score >= 50: # Minimum score to be considered a recovery candidate
-        return {
-            'ticker': ticker,
-            'recovery_score': score,
-            'rsi': rsi_curr,
-            'reasons': reasons,
-            'price': close_curr,
-            'is_pin': is_bullish_pin
-        }
-    return None
 
 def generate_unified_report(batch_df, regime):
     """
@@ -1701,30 +1267,7 @@ def generate_unified_report(batch_df, regime):
 
 
 # --- 7. SET100 Batch Scanner ---
-def get_signal_performance_stats():
-    """Calculate Win Rate for each signal type from Supabase."""
-    if not supabase:
-        return {}
-        
-    try:
-        response = supabase.table("scan_results") \
-            .select("signal_type, outcome_label") \
-            .is_("outcome_label", "not.null") \
-            .execute()
-        df = pd.DataFrame(response.data)
-        
-        if df.empty:
-            return {}
-        
-        perf = df.groupby('signal_type').agg(
-            Total=('outcome_label', 'count'),
-            Wins=('outcome_label', lambda x: (x == 'Win').sum())
-        )
-        perf['Win_Rate'] = (perf['Wins'] / perf['Total']) * 100
-        return perf.to_dict('index')
-    except Exception as e:
-        print(f"Stats Error: {e}")
-        return {}
+# Removed local get_signal_performance_stats as it is now in scanner_engine.py
 
 def run_set100_batch_scan(tickers, target_date=None):
     """
@@ -1756,7 +1299,7 @@ def run_set100_batch_scan(tickers, target_date=None):
         all_profiles = {}
     
     # Get performance stats once for scoring
-    perf_stats = get_signal_performance_stats()
+    perf_stats = get_signal_performance_stats(supabase)
     pos_count = 0
     neg_count = 0
     success_count = 0
@@ -1778,91 +1321,35 @@ def run_set100_batch_scan(tickers, target_date=None):
 
                 if len(df_raw) < 100: continue
 
-                # Calculate indicators for ATR/Volatility check
-                df = calculate_quant_indicators(df_raw, 14, 10, 50)
+                # Unified Scanner Call (V7)
+                scan_res = core_strategy_scanner(ticker, df_raw, target_date=target_date)
+                if not scan_res: continue
                 
-                # Bullish/Bearish Scan
-                bullish = get_pre_breakout_scanner(df_raw, mode='bullish')
-                bearish = get_pre_breakout_scanner(df_raw, mode='bearish')
+                # Extract values for report
+                bull_score = scan_res['bull_score']
+                bear_score = scan_res['bear_score']
+                score_diff = scan_res['score_diff']
+                signal = scan_res['signal']
+                last_price = scan_res['close_price']
+                pct_change = scan_res['change_percent']
+                rsi_curr = scan_res['rsi']
+                rel_vol = scan_res['rel_vol']
+                atc_risk = scan_res['atc_risk']
+                consensus = scan_res['consensus']
+                mtf_status = scan_res['mtf_status']
+                mtf_score = scan_res['mtf_score']
+                recovery_data = scan_res['recovery_data']
+                atr_now = scan_res['atr_now']
+                high_vol = scan_res['high_vol']
+                bull_jump = scan_res['bull_jump']
+                bear_jump = scan_res['bear_jump']
+                score_velocity = scan_res['score_velocity']
                 
-                bull_score = 0
-                bull_jump = 0
-                if bullish and bullish['matches']:
-                    best_bull = bullish['matches'][0]
-                    bull_score = max(0, 100 - (best_bull['dist'] * 20))
-                    bull_jump = best_bull['jump']
-                
-                bear_score = 0
-                bear_jump = 0
-                if bearish and bearish['matches']:
-                    best_bear = bearish['matches'][0]
-                    bear_score = max(0, 100 - (best_bear['dist'] * 20))
-                    bear_jump = best_bear['jump']
-                
-                # Calculate Relative Volume
-                avg_vol = df_raw['Volume'].rolling(5).mean().iloc[-1]
-                curr_vol = df_raw['Volume'].iloc[-1]
-                rel_vol = curr_vol / avg_vol if avg_vol > 0 else 1.0
-                
-                # Calculate % Change
-                pct_change = ((df_raw['Close'].iloc[-1] - df_raw['Close'].iloc[-2]) / df_raw['Close'].iloc[-2]) * 100
                 if pct_change > 0: pos_count += 1
                 elif pct_change < 0: neg_count += 1
                 
-                # ATC Risk
                 day_high = df_raw['High'].iloc[-1]
-                last_price = df_raw['Close'].iloc[-1]
-                atc_risk = ((day_high - last_price) / day_high) * 100 if day_high > 0 else 0
-                
-                # Volatility Guard
-                atr_now = df['ATR'].iloc[-1]
-                atr_avg5 = df['ATR_Avg_5'].iloc[-1]
-                high_vol = atr_now > (atr_avg5 * 1.2)
-                
-                # NEW: Volume Compression (บีบตัวของวอลุ่มก่อนระเบิด)
-                # เช็คว่าวอลุ่มวันนี้ต่ำกว่าค่าเฉลี่ย 5 วัน และอยู่ในช่วงสะสม (0.6 - 1.0)
-                vol_avg5 = df['Volume'].rolling(5).mean().iloc[-1]
-                curr_vol = df['Volume'].iloc[-1]
-                is_vol_compressed = curr_vol < vol_avg5 and 0.6 <= rel_vol <= 1.0
-                
-                # Calculate Pattern Consensus (Hybrid Hit Rate + Trend Quality)
-                # MOVED UP to avoid NameError in Signal Logic
-                consensus = 0
-                try:
-                    # 1. Historical Pattern Match (Hit Rate)
-                    df_temp = df.copy()
-                    df_temp['Pct_Change'] = df_temp['Close'].pct_change()
-                    events = df_temp[df_temp['Pct_Change'] >= 0.05].index.tolist()
-                    
-                    winning_pats = []
-                    for b_date in events:
-                        idx = df_temp.index.get_loc(b_date)
-                        if idx < 5: continue
-                        p_data = df_temp.iloc[idx-5 : idx]
-                        p_norm = StandardScaler().fit_transform(p_data[['Close']]).flatten()
-                        v_norm = StandardScaler().fit_transform(p_data[['Volume']]).flatten()
-                        winning_pats.append({'price_pattern': p_norm, 'vol_pattern': v_norm})
-                    
-                    val = validate_scanner_accuracy(df, winning_pats, price_threshold=80.0, vol_threshold=70.0)
-                    hit_rate = val['summary']['Hit Rate'] if val else 0
-                    
-                    # 2. Current Trend Quality (0-100)
-                    ema_f_curr = df['EMA_Fast'].iloc[-1]
-                    ema_s_curr = df['EMA_Slow'].iloc[-1]
-                    close_curr = df['Close'].iloc[-1]
-                    ema_s_slope = (df['EMA_Slow'].iloc[-1] - df['EMA_Slow'].iloc[-5]) / df['EMA_Slow'].iloc[-5] * 100
-                    
-                    trend_score = 0
-                    if close_curr > ema_s_curr: trend_score += 40
-                    if ema_f_curr > ema_s_curr: trend_score += 40
-                    if ema_s_slope > 0: trend_score += 20
-                    
-                    if hit_rate > 0:
-                        consensus = (hit_rate * 0.6) + (trend_score * 0.4)
-                    else:
-                        consensus = trend_score
-                except:
-                    consensus = 0
+                m_regime, _ = get_market_regime()
 
                 # Fetch Sector
                 sector = 'N/A'
@@ -1873,103 +1360,6 @@ def run_set100_batch_scan(tickers, target_date=None):
                 
                 if sector == 'N/A':
                     sector = get_stock_info(ticker)
-
-                # --- 1. Advanced Candlestick Analysis (The BCP Fix) ---
-                c_open = df_raw['Open'].iloc[-1]
-                c_high = df_raw['High'].iloc[-1]
-                c_low = df_raw['Low'].iloc[-1]
-                c_close = df_raw['Close'].iloc[-1]
-                body_size = abs(c_close - c_open)
-                upper_wick = c_high - max(c_open, c_close)
-                lower_wick = min(c_open, c_close) - c_low
-                
-                # Refined Detection: 
-                # - REJECTION WICK: Long upper wick at high price levels (Potential Reversal)
-                # - PIN BAR: Long lower wick at low price levels (Potential Support)
-                is_rejection_wick = upper_wick > (body_size * 1.5) and (c_high > last_price)
-                is_pin_bar = lower_wick > (body_size * 1.5) and (c_close > c_open) # Bullish Pin Bar
-                
-                # --- 2. Score Velocity (The Momentum Trend) ---
-                prev_bull_score = 0
-                if len(df_raw) > 2:
-                    # Briefly re-run scanner for yesterday (Simplified)
-                    df_prev = df_raw.iloc[:-1]
-                    bull_prev = get_pre_breakout_scanner(df_prev, mode='bullish')
-                    if bull_prev and bull_prev['matches']:
-                        prev_bull_score = max(0, 100 - (bull_prev['matches'][0]['dist'] * 20))
-                
-                score_velocity = bull_score - prev_bull_score if prev_bull_score > 0 else 0
-                is_fading_momentum = score_velocity < -5.0 # Score dropping fast
-                
-                # --- Signal Logic V7 (The Multi-Variable Guard) ---
-                score_diff = bull_score - bear_score
-                m_regime, _ = get_market_regime()
-                
-                # Logic Insights:
-                # 1. BCP Case: Rejection at resistance (EMA50) with long wick.
-                # 2. Score Trend: Even if score is high, if it's falling (Velocity < 0), be careful.
-                # 3. Conflict: Bull and Bear scores both high (>70) = Indecision.
-                
-                rsi_curr = df['RSI'].iloc[-1] if 'RSI' in df.columns else 50
-                ema_fast = df['EMA_Fast'].iloc[-1]
-                ema_slow = df['EMA_Slow'].iloc[-1]
-                
-                # Dynamic Thresholds
-                is_pre_fly = 12.0 <= score_diff <= 22.0
-                is_caution = score_diff > 25.0
-                is_momentum_strong = rel_vol > 1.5
-                # SILENT ACCUM: Price + (Volume Compression OR Tight Rel Vol) + Low ATC Risk
-                is_silent_accum = (pct_change > 0 and (is_vol_compressed or 0.8 <= rel_vol <= 1.2) and atc_risk < 0.5)
-                is_rr_good = bull_jump > abs(bear_jump)
-                
-                # --- NEW: Multi-Timeframe Confirmation (MTF) ---
-                mtf_status = "N/A"
-                mtf_score = 0
-                # Only check MTF for Live Scan (target_date is None) to save time and data
-                # OPTIMIZATION: Only fetch MTF if Bullish Score is decent (> 40)
-                if target_date is None and bull_score > 40:
-                    mtf_status, mtf_score = get_mtf_confluence(ticker)
-                
-                # Refined Filters (The BCP & CPF Balance)
-                is_blow_off = (rsi_curr > 72 and rel_vol > 1.8 and pct_change > 4.5) or (rsi_curr > 82)
-                is_conflict_zone = (bull_score > 70 and bear_score > 70)
-                is_bearish_trap = (bear_score > bull_score) or (bear_score > 80.0)
-                is_overextended = (last_price > ema_fast * 1.06) 
-                is_downtrend = last_price < ema_slow # Below EMA50
-                
-                signal = 'WAIT'
-                
-                # Signal Assignment with Priority
-                if is_rejection_wick:
-                    signal = 'REJECTION WICK'
-                elif is_pin_bar and is_downtrend:
-                    signal = 'PIN BAR (SUPPORT)'
-                elif is_fading_momentum and score_diff < 15:
-                    signal = 'FADING MOMENTUM'
-                elif is_blow_off or is_overextended:
-                    signal = 'TAKE PROFIT / WAIT'
-                elif is_bearish_trap and score_diff < 5:
-                    signal = 'WAIT (BEARISH TRAP)'
-                elif is_conflict_zone:
-                    signal = 'CONFLICT (HIGH RISK)'
-                elif pct_change > 0:
-                    if is_pre_fly and is_momentum_strong and is_rr_good:
-                        signal = 'PRE-FLY'
-                    elif is_silent_accum and score_diff > 5:
-                        signal = 'SILENT ACCUM'
-                    elif is_caution:
-                        signal = 'CAUTION'
-                    elif 2.0 <= score_diff <= 15.0 and is_momentum_strong and is_rr_good:
-                        if is_downtrend:
-                            signal = 'BOTTOM PLAY'
-                        else:
-                            signal = 'GOLDEN BUY'
-                    elif bull_score > 80 and score_diff > 15 and is_momentum_strong:
-                        signal = 'BUY'
-                    elif is_downtrend:
-                        signal = 'WAIT (DOWNTREND)'
-                elif is_downtrend:
-                    signal = 'WAIT (DOWNTREND)'
 
                 # Outcome Calculation (Historical Only)
                 outcome = "N/A"
@@ -2001,9 +1391,6 @@ def run_set100_batch_scan(tickers, target_date=None):
                         db_date = batch_date
                         db_time = batch_time
 
-                    # --- NEW: Recovery Signal Check (Bottom Fishing) ---
-                    recovery_data = get_recovery_signals(ticker, df)
-                    # Note: strategy will be updated later in the post-processing loop
 
                     # Capture basic info for SRS calculation
                     results.append({
@@ -2353,7 +1740,7 @@ if st.session_state['batch_results'] is not None:
             "📊 Market Breadth", 
             "📜 Admin & History", 
             "💎 SILENT ACCUM Insight",
-            "🤖 Auto Market Scan Results (SET100)",
+            "📊 Market Scan Results (SET100)",
             "🛠️ Advanced Tools / More Features"
         ])
         
@@ -2646,80 +2033,85 @@ if st.session_state['batch_results'] is not None:
             else:
                 st.warning("ยังไม่มีข้อมูล SILENT ACCUM เพียงพอสำหรับการวิเคราะห์")
 
-        with main_tabs[5]: # Auto Market Scan Results
-            st.info("🤖 Auto Market Scan Results (SET100)")
-            st.caption("🕒 **Auto Scanner:** ดึงผลการวิเคราะห์ล่าสุดจากระบบสแกนอัตโนมัติ (GitHub Actions) ที่รันทุก 30 นาทีในช่วงตลาดเปิด")
+        with main_tabs[5]: # Market Scan Results (Hybrid)
+            st.info("📊 Market Scan Results (SET100)")
+            st.caption("🕒 **Hybrid View:** แสดงผลการวิเคราะห์ล่าสุดของหุ้นแต่ละตัว โดยรวมข้อมูลจากทั้งการสแกนอัตโนมัติ (Auto) และการสแกนด้วยตนเอง (Manual)")
             
-            auto_df = fetch_auto_scan_results()
+            combined_df = fetch_market_scan_results()
             
-            if not auto_df.empty:
+            if not combined_df.empty:
                 # 1. Metric Summary
-                last_scan = pd.to_datetime(auto_df['scanned_at'].iloc[0]).astimezone(SET_TZ)
-                buy_count = len(auto_df[auto_df['signal'] == 'BUY'])
-                wait_count = len(auto_df[auto_df['signal'] == 'WAIT'])
+                last_scan = combined_df['scanned_at'].max().astimezone(SET_TZ)
+                buy_count = len(combined_df[combined_df['signal'] == 'BUY'])
+                wait_count = len(combined_df[combined_df['signal'].str.contains('WAIT', na=False)])
                 
                 m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Total Stocks", len(auto_df))
+                m1.metric("Total Stocks", len(combined_df))
                 m2.metric("BUY Signals", buy_count)
                 m3.metric("WAIT Signals", wait_count)
-                m4.metric("Last Scan Time", last_scan.strftime("%H:%M:%S"))
+                m4.metric("Latest Update", last_scan.strftime("%H:%M:%S"))
                 
                 st.divider()
                 
                 # 2. Filters
                 f1, f2, f3 = st.columns([1, 1, 2])
-                sig_options = ["ALL"] + sorted(auto_df['signal'].unique().tolist())
-                sel_sig = f1.selectbox("Filter Signal", sig_options, key="auto_sig_filter")
+                sig_options = ["ALL"] + sorted(combined_df['signal'].dropna().unique().tolist())
+                sel_sig = f1.selectbox("Filter Signal", sig_options, key="mkt_sig_filter")
                 
-                strat_options = ["ALL"] + sorted(auto_df['strategy'].unique().tolist())
-                sel_strat = f2.selectbox("Filter Strategy", strat_options, key="auto_strat_filter")
+                strat_options = ["ALL"] + sorted(combined_df['strategy'].dropna().unique().tolist())
+                sel_strat = f2.selectbox("Filter Strategy", strat_options, key="mkt_strat_filter")
                 
-                search_ticker = f3.text_input("🔍 Ticker Search", "", key="auto_ticker_search").upper()
+                search_ticker = f3.text_input("🔍 Ticker Search", "", key="mkt_ticker_search").upper()
                 
                 # Apply Filters
-                filtered_auto = auto_df.copy()
+                filtered_mkt = combined_df.copy()
                 if sel_sig != "ALL":
-                    filtered_auto = filtered_auto[filtered_auto['signal'] == sel_sig]
+                    filtered_mkt = filtered_mkt[filtered_mkt['signal'] == sel_sig]
                 if sel_strat != "ALL":
-                    filtered_auto = filtered_auto[filtered_auto['strategy'] == sel_strat]
+                    filtered_mkt = filtered_mkt[filtered_mkt['strategy'] == sel_strat]
                 if search_ticker:
-                    filtered_auto = filtered_auto[filtered_auto['ticker'].str.contains(search_ticker)]
+                    filtered_mkt = filtered_mkt[filtered_mkt['ticker'].str.contains(search_ticker)]
                 
                 # 3. Display Dataframe with Styling
-                def style_auto_scan(styler):
+                def style_mkt_scan(styler):
                     def highlight_buy(row):
                         return ['background-color: rgba(34, 197, 94, 0.15)' if row['signal'] == 'BUY' else '' for _ in row]
                     
                     styler.apply(highlight_buy, axis=1)
                     styler.format({
+                        'price': '{:.2f}',
                         'close_price': '{:.2f}',
                         'change_percent': '{:+.2f}%',
                         'score': '{:.1f}',
+                        'bull_score': '{:.1f}',
                         'rsi': '{:.1f}',
                         'volume': '{:,.0f}'
-                    })
+                    }, na_rep='N/A')
                     return styler
 
-                st.subheader(f"📋 Scan Results ({len(filtered_auto)} stocks)")
-                if not filtered_auto.empty:
+                st.subheader(f"📋 Market Results ({len(filtered_mkt)} stocks)")
+                if not filtered_mkt.empty:
+                    # Map price if needed
+                    if 'price' in filtered_mkt.columns:
+                        filtered_mkt['close_price'] = filtered_mkt['price']
+                        
                     # Reorder columns for readability
                     display_cols = [
                         'ticker', 'signal', 'score', 'strategy', 'close_price', 
-                        'change_percent', 'rsi', 'volume', 'sector', 
-                        'is_recovery', 'is_pinbar', 'is_silent_accum'
+                        'change_percent', 'rsi', 'volume', 'source', 'scanned_at'
                     ]
-                    actual_display = [c for c in display_cols if c in filtered_auto.columns]
-                    st.dataframe(style_auto_scan(filtered_auto[actual_display].style), use_container_width=True)
+                    actual_display = [c for c in display_cols if c in filtered_mkt.columns]
+                    st.dataframe(style_mkt_scan(filtered_mkt[actual_display].style), use_container_width=True)
                 else:
                     st.warning("ไม่พบข้อมูลตามเงื่อนไขที่กรอง")
 
                 # --- NEW SECTION: Historical Signal Analysis ---
                 st.divider()
                 st.subheader("📈 Stock Historical Signal Analysis")
-                st.caption("📊 **Historical Analysis:** เจาะลึกประวัติสัญญาณเทรดและแนวโน้มราคาย้อนหลัง 90 วัน")
+                st.caption("📊 **Historical Analysis:** เจาะลึกประวัติสัญญาณเทรดและแนวโน้มราคาย้อนหลัง 90 วัน (Hybrid Data)")
                 
-                all_tickers = sorted(auto_df['ticker'].unique().tolist())
-                sel_hist_ticker = st.selectbox("เลือกหุ้นเพื่อดูประวัติสัญญาณ", all_tickers, key="auto_hist_ticker_select")
+                all_tickers = sorted(combined_df['ticker'].unique().tolist())
+                sel_hist_ticker = st.selectbox("เลือกหุ้นเพื่อดูประวัติสัญญาณ", all_tickers, key="mkt_hist_ticker_select")
                 
                 if sel_hist_ticker:
                     with st.spinner(f"Loading historical data for {sel_hist_ticker}..."):
