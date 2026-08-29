@@ -560,8 +560,8 @@ def fetch_market_scan_results():
     df_auto = pd.DataFrame()
     df_manual = pd.DataFrame()
     
+    # 1. Fetch from auto_scan_results (Auto)
     try:
-        # 1. Fetch from auto_scan_results (Auto)
         auto_res = supabase.table("auto_scan_results") \
             .select("*") \
             .order("scanned_at", desc=True) \
@@ -571,78 +571,86 @@ def fetch_market_scan_results():
         if auto_res.data:
             df_auto = pd.DataFrame(auto_res.data)
             df_auto['source'] = 'Auto'
-            # Convert to Bangkok time and make naive for consistent concatenation
-            df_auto['scanned_at'] = pd.to_datetime(df_auto['scanned_at']).dt.tz_convert(SET_TZ).dt.tz_localize(None)
-            # Ensure standard column names
+            # Standardize scanned_at to naive Bangkok time
+            df_auto['scanned_at'] = pd.to_datetime(df_auto['scanned_at'], errors='coerce')
+            if df_auto['scanned_at'].dt.tz is not None:
+                df_auto['scanned_at'] = df_auto['scanned_at'].dt.tz_convert(SET_TZ).dt.tz_localize(None)
+            
+            # Standardize Column Names
             df_auto = df_auto.rename(columns={
-                'close_price': 'price',
+                'close_price': 'close_price', # already correct
                 'score': 'bull_score'
             })
-
-        # 2. Fetch from scan_results (Manual)
-        try:
-            manual_res = supabase.table("scan_results") \
-                .select("*") \
-                .order("scan_date", desc=True) \
-                .limit(300) \
-                .execute()
-            
-            if manual_res.data:
-                df_manual = pd.DataFrame(manual_res.data)
-                df_manual['source'] = 'Manual'
-                
-                # Robustly find date and time columns
-                d_col = 'scan_date' if 'scan_date' in df_manual.columns else ('date' if 'date' in df_manual.columns else None)
-                t_col = 'scan_time' if 'scan_time' in df_manual.columns else ('time' if 'time' in df_manual.columns else None)
-                
-                if d_col and t_col:
-                    df_manual['scanned_at'] = pd.to_datetime(df_manual[d_col].astype(str) + ' ' + df_manual[t_col].fillna('00:00:00').astype(str)).dt.tz_localize(None)
-                elif d_col:
-                    df_manual['scanned_at'] = pd.to_datetime(df_manual[d_col].astype(str)).dt.tz_localize(None)
-                else:
-                    # Fallback to created_at if available
-                    c_col = 'created_at' if 'created_at' in df_manual.columns else None
-                    if c_col:
-                        df_manual['scanned_at'] = pd.to_datetime(df_manual[c_col]).dt.tz_localize(None)
-                    else:
-                        df_manual['scanned_at'] = pd.Timestamp.now().normalize()
-                
-                # Ensure standard column names
-                df_manual = df_manual.rename(columns={
-                    'signal_type': 'signal'
-                })
-                # Add missing columns with None for alignment
-                for col in ['strategy', 'change_percent', 'volume', 'sector', 'is_recovery', 'is_pinbar', 'is_silent_accum']:
-                    if col not in df_manual.columns:
-                        df_manual[col] = None
-        except Exception as e:
-            print(f"Manual fetch error: {e}")
-            df_manual = pd.DataFrame()
-
-        # 3. Hybrid Aggregation
-        if df_auto.empty and df_manual.empty:
-            return pd.DataFrame()
-            
-        combined = pd.concat([df_auto, df_manual], ignore_index=True)
-
-        # 4. Cleanup & Unification: Ensure final score is in 'score' column
-        if not combined.empty:
-            if 'conviction_score' in combined.columns:
-                combined['score'] = combined['conviction_score'].fillna(
-                    combined['score'] if 'score' in combined.columns else combined['bull_score']
-                )
-            elif 'bull_score' in combined.columns and 'score' not in combined.columns:
-                combined['score'] = combined['bull_score']
-
-            # 5. Deduplicate: Latest Scanned Timestamp per Ticker
-            combined = combined.sort_values(by='scanned_at', ascending=False)
-            combined = combined.drop_duplicates(subset=['ticker'], keep='first')
-            
-        return combined
-
     except Exception as e:
-        print(f"Error fetching hybrid scan results: {e}")
+        st.warning(f"⚠️ ไม่สามารถดึงข้อมูลจาก auto_scan_results: {e}")
+        df_auto = pd.DataFrame()
+
+    # 2. Fetch from scan_results (Manual)
+    try:
+        manual_res = supabase.table("scan_results") \
+            .select("*") \
+            .order("scan_date", desc=True) \
+            .limit(300) \
+            .execute()
+        
+        if manual_res.data:
+            df_manual = pd.DataFrame(manual_res.data)
+            df_manual['source'] = 'Manual'
+            
+            # Standardize scanned_at
+            d_col = 'scan_date' if 'scan_date' in df_manual.columns else ('date' if 'date' in df_manual.columns else None)
+            t_col = 'scan_time' if 'scan_time' in df_manual.columns else ('time' if 'time' in df_manual.columns else None)
+            
+            if d_col and t_col:
+                df_manual['scanned_at'] = pd.to_datetime(df_manual[d_col].astype(str) + ' ' + df_manual[t_col].fillna('00:00:00').astype(str), errors='coerce')
+            elif d_col:
+                df_manual['scanned_at'] = pd.to_datetime(df_manual[d_col].astype(str), errors='coerce')
+            else:
+                c_col = 'created_at' if 'created_at' in df_manual.columns else None
+                df_manual['scanned_at'] = pd.to_datetime(df_manual[c_col], errors='coerce') if c_col else pd.Timestamp.now()
+            
+            if df_manual['scanned_at'].dt.tz is not None:
+                df_manual['scanned_at'] = df_manual['scanned_at'].dt.tz_localize(None)
+
+            # Standardize Column Names
+            df_manual = df_manual.rename(columns={
+                'signal_type': 'signal',
+                'price': 'close_price'
+            })
+            
+            # Ensure missing columns exist for concat
+            for col in ['strategy', 'change_percent', 'volume', 'sector', 'rsi']:
+                if col not in df_manual.columns:
+                    df_manual[col] = None
+    except Exception as e:
+        st.warning(f"⚠️ ไม่สามารถดึงข้อมูลจาก scan_results: {e}")
+        df_manual = pd.DataFrame()
+
+    # 3. Hybrid Aggregation
+    if df_auto.empty and df_manual.empty:
         return pd.DataFrame()
+        
+    combined = pd.concat([df_auto, df_manual], ignore_index=True)
+
+    # 4. Standardize Score & Deduplicate
+    if not combined.empty:
+        # Standardize score column
+        if 'conviction_score' in combined.columns:
+            combined['score'] = combined['conviction_score'].fillna(
+                combined['score'] if 'score' in combined.columns else combined['bull_score']
+            )
+        elif 'bull_score' in combined.columns and 'score' not in combined.columns:
+            combined['score'] = combined['bull_score']
+        
+        # Ensure 'signal' exists (manual used signal_type -> signal)
+        if 'signal' not in combined.columns:
+            combined['signal'] = 'WAIT'
+
+        # Sort and Deduplicate
+        combined = combined.sort_values(by='scanned_at', ascending=False)
+        combined = combined.drop_duplicates(subset=['ticker'], keep='first')
+        
+    return combined
 
 def fetch_ticker_combined_history(ticker, days=90):
     """Retrieve historical scan signals from both scan_results and auto_scan_results."""
