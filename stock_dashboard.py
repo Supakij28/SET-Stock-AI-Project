@@ -631,7 +631,7 @@ def fetch_market_scan_results():
         return pd.DataFrame()
         
     # Standardize columns to avoid InvalidIndexError
-    cols = ['ticker', 'signal', 'score', 'strategy', 'close_price', 'change_percent', 'rsi', 'scanned_at', 'source']
+    cols = ['ticker', 'signal', 'score', 'strategy', 'close_price', 'change_percent', 'rsi', 'scanned_at', 'source', 'is_pinbar', 'is_silent_accum']
     
     def clean_df(df):
         if df.empty:
@@ -643,6 +643,7 @@ def fetch_market_scan_results():
         # 3. Ensure 'score' exists
         if 'score' not in df.columns:
             df['score'] = df.get('conviction_score', df.get('bull_score'))
+        
         # 4. Fill missing columns
         for c in cols:
             if c not in df.columns:
@@ -1879,49 +1880,89 @@ if st.session_state['batch_results'] is not None:
         with main_tabs[1]: # Bottom Fishing
             st.info("💎 หุ้นที่ Oversold และเริ่มมีสัญญาณกลับตัว (Bottom Fishing)")
             st.caption("🎯 **Feature Insight:** ค้นหาหุ้นที่มี RSI ต่ำกว่า 35 และเริ่มมีแรงซื้อกลับ (RSI Turning Up) พร้อม Candlestick รูปแบบ Bullish Pin Bar เพื่อหาจังหวะต้นเทรนด์")
-            recovery_list = [row['Recovery_Data'] for _, row in batch_df.iterrows() if 'Recovery_Data' in row and row['Recovery_Data'] is not None]
             
-            if recovery_list:
-                recovery_df = pd.DataFrame(recovery_list).sort_values('recovery_score', ascending=False)
-                st.success(f"🎯 พบหุ้นที่มีโอกาสกลับตัว {len(recovery_df)} ตัว")
+            # [HYBRID MANDATE] Use latest results from both sources
+            hybrid_results = fetch_market_scan_results()
+            
+            if not hybrid_results.empty:
+                # 1. Filtering for Oversold
+                hybrid_results['rsi'] = pd.to_numeric(hybrid_results['rsi'], errors='coerce')
+                oversold_df = hybrid_results[hybrid_results['rsi'] <= 35].copy()
                 
-                for idx, r_row in recovery_df.iterrows():
-                    r_dot_color = "#8b5cf6" 
-                    r_sig_bg = "#f5f3ff"; r_sig_fg = "#5b21b6"
-                    reasons_html = "".join([f'<div style="font-size: 0.75rem; color: #5b21b6; margin-bottom: 2px;">• {reason}</div>' for reason in r_row['reasons']])
+                if not oversold_df.empty:
+                    oversold_df = oversold_df.sort_values('rsi', ascending=True)
+                    st.success(f"🎯 พบหุ้น Oversold (RSI <= 35) จำนวน {len(oversold_df)} ตัว")
                     
-                    # Compact Card for Recovery
-                    act_sig = r_row.get('actual_signal', 'N/A')
-                    act_strat = r_row.get('actual_strategy', 'N/A')
+                    # Display cards
+                    for idx, row in oversold_df.iterrows():
+                        r_dot_color = "#8b5cf6" 
+                        r_sig_bg = "#f5f3ff"; r_sig_fg = "#5b21b6"
+                        
+                        # Build dynamic reasons based on available data
+                        reasons = []
+                        if row['rsi'] < 30: reasons.append("Extreme Oversold (RSI < 30)")
+                        elif row['rsi'] <= 35: reasons.append("Oversold Zone (RSI <= 35)")
+                        if row.get('is_pinbar'): reasons.append("Bullish Pin Bar Detected")
+                        if row.get('signal') == 'BUY': reasons.append("Positive Buy Signal")
+                        
+                        reasons_html = "".join([f'<div style="font-size: 0.75rem; color: #5b21b6; margin-bottom: 2px;">• {reason}</div>' for reason in reasons])
+                        
+                        # Card Content
+                        r_card_html = f"""
+                        <div class="compact-card">
+                            <div class="card-header">
+                                <div class="header-left">
+                                    <div class="dot-indicator" style="background-color: {r_dot_color};"></div>
+                                    <div class="ticker-name">{row['ticker']}</div>
+                                </div>
+                                <div class="status-pill recovery">OVERSOLD</div>
+                            </div>
+                            <div class="score-container">
+                                <div class="score-label">Score</div>
+                                <div class="score-big">{int(row['score']) if pd.notna(row['score']) else 0}</div>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 4px;">
+                                <div class="signal-badge" style="background-color: {r_sig_bg}; color: {r_sig_fg};">RSI: {row['rsi']:.1f}</div>
+                                <div style="font-size: 0.75rem; font-weight: 600; color: #7c3aed;">Signal: {row['signal']}</div>
+                                <div style="font-size: 0.75rem; font-weight: 600; color: #4b5563;">Strategy: {row['strategy'] if row['strategy'] else 'N/A'}</div>
+                            </div>
+                            <div style="margin-top: 10px; padding: 6px; background-color: #fdfcff; border-radius: 8px; border: 1px dashed #ddd6fe;">
+                                {reasons_html}
+                            </div>
+                            <div class="stats-grid">
+                                <div class="stat-item"><div class="stat-lbl">RSI</div><div class="stat-val">{row['rsi']:.1f}</div></div>
+                                <div class="stat-item"><div class="stat-lbl">PRICE</div><div class="stat-val">{row['close_price']:.2f}</div></div>
+                                <div class="stat-item"><div class="stat-lbl">PIN BAR</div><div class="stat-val">{'✅' if row.get('is_pinbar') else '❌'}</div></div>
+                            </div>
+                        </div>
+                        """
+                        # Clean HTML indentation and render
+                        clean_r_card_html = textwrap.dedent(r_card_html).strip()
+                        st.markdown(clean_r_card_html, unsafe_allow_html=True)
+                        
+                        with st.expander(f"Analysis: {row['ticker']}"):
+                            st.write(f"🔍 **เหตุผลที่ติดโผ:** {', '.join(reasons)}")
+                            if user_api_key:
+                                if st.button(f"Oversold AI Plan: {row['ticker']}", key=f"tab_oversold_btn_{row['ticker']}"):
+                                    dummy_row = {'Last Price': row['close_price'], 'Signal': row['signal'], 'Bullish Score (%)': row['score'], 'Bearish Score (%)': 0, 'Score Diff': row['score'], 'MTF Conf': 'N/A', 'MTF Score': 0, 'Relative Vol': 1.0, 'Pattern Consensus (%)': 50}
+                                    st.markdown(generate_ai_trading_plan(row['ticker'], dummy_row, user_api_key))
                     
-                    r_card_html = f"""<div class="compact-card"><div class="card-header"><div class="header-left"><div class="dot-indicator" style="background-color: {r_dot_color};"></div><div class="ticker-name">{r_row['ticker']}</div></div><div class="status-pill recovery">RECOVERY</div></div><div class="score-container"><div class="score-label">Score</div><div class="score-big">{r_row['recovery_score']}</div></div><div style="display: flex; flex-direction: column; gap: 4px;"><div class="signal-badge" style="background-color: {r_sig_bg}; color: {r_sig_fg};">OVERSOLD RECOVERY</div><div style="font-size: 0.75rem; font-weight: 600; color: #7c3aed;">Signal: {act_sig}</div><div style="font-size: 0.75rem; font-weight: 600; color: #4b5563;">Strategy: {act_strat}</div></div><div style="margin-top: 10px; padding: 6px; background-color: #fdfcff; border-radius: 8px; border: 1px dashed #ddd6fe;">{reasons_html}</div><div class="stats-grid"><div class="stat-item"><div class="stat-lbl">RSI</div><div class="stat-val">{r_row['rsi']:.1f}</div></div><div class="stat-item"><div class="stat-lbl">PRICE</div><div class="stat-val">{r_row['price']:.2f}</div></div><div class="stat-item"><div class="stat-lbl">PIN BAR</div><div class="stat-val">{'✅' if r_row['is_pin'] else '❌'}</div></div></div></div>"""
-                    # Clean HTML indentation and render
-                    clean_r_card_html = textwrap.dedent(r_card_html).strip()
-                    st.markdown(clean_r_card_html, unsafe_allow_html=True)
-                    
-                    with st.expander(f"Recovery Analysis: {r_row['ticker']}"):
-                        st.write(f"🔍 **ทำไมถึงติดโผ:** {', '.join(r_row['reasons'])}")
-                        if user_api_key:
-                            if st.button(f"Recovery AI Plan: {r_row['ticker']}", key=f"tab_recovery_btn_{r_row['ticker']}"):
-                                dummy_row = {'Last Price': r_row['price'], 'Signal': 'RECOVERY (OVERSOLD)', 'Bullish Score (%)': r_row['recovery_score'], 'Bearish Score (%)': 0, 'Score Diff': r_row['recovery_score'], 'MTF Conf': 'N/A', 'MTF Score': 0, 'Relative Vol': 1.0, 'Pattern Consensus (%)': 50}
-                                st.markdown(generate_ai_trading_plan(r_row['ticker'], dummy_row, user_api_key))
-                
-                st.divider()
-                st.subheader("📋 ตารางสรุปรวม (Summary Table)")
-                # Safe Column Selection
-                b_cols = {
-                    'ticker': 'Ticker',
-                    'recovery_score': 'Score',
-                    'actual_signal': 'Signal',
-                    'rsi': 'RSI',
-                    'price': 'Price',
-                    'is_pin': 'Pin Bar'
-                }
-                fishing_summary = recovery_df[[c for c in b_cols.keys() if c in recovery_df.columns]].copy()
-                fishing_summary.rename(columns=b_cols, inplace=True)
-                st.dataframe(fishing_summary, use_container_width=True)
+                    st.divider()
+                    st.subheader("📋 ตารางสรุปหุ้น Oversold (Summary Table)")
+                    summary_cols = ['ticker', 'rsi', 'close_price', 'signal', 'strategy', 'source', 'scanned_at']
+                    st.dataframe(oversold_df[summary_cols].rename(columns={
+                        'ticker': 'Ticker',
+                        'rsi': 'RSI',
+                        'close_price': 'Price',
+                        'signal': 'Signal',
+                        'strategy': 'Strategy',
+                        'source': 'Source',
+                        'scanned_at': 'Scanned At'
+                    }), use_container_width=True)
+                else:
+                    st.info("ℹ️ ยังไม่พบหุ้น Oversold (RSI <= 35)")
             else:
-                st.info("ℹ️ ยังไม่พบหุ้น Oversold")
+                st.info("ℹ️ ยังไม่มีข้อมูลการสแกนในระบบ (กรุณากด Run SET100 Batch Scan หรือรอระบบ Auto Scan)")
         
         with main_tabs[2]: # Market Breadth
             st.subheader(f"📊 Market Breadth: หุ้นบวก {pos_count} | หุ้นลบ {neg_count}")
