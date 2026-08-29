@@ -556,17 +556,20 @@ def fetch_market_scan_results():
     """
     if not supabase:
         return pd.DataFrame()
+    
+    df_auto = pd.DataFrame()
+    df_manual = pd.DataFrame()
+    
     try:
         # 1. Fetch from auto_scan_results (Auto)
-        # Get the latest 300 entries to cover SET100 across a few runs
         auto_res = supabase.table("auto_scan_results") \
             .select("*") \
             .order("scanned_at", desc=True) \
             .limit(300) \
             .execute()
         
-        df_auto = pd.DataFrame(auto_res.data)
-        if not df_auto.empty:
+        if auto_res.data:
+            df_auto = pd.DataFrame(auto_res.data)
             df_auto['source'] = 'Auto'
             df_auto['scanned_at'] = pd.to_datetime(df_auto['scanned_at'])
             # Ensure standard column names
@@ -579,15 +582,15 @@ def fetch_market_scan_results():
         manual_res = supabase.table("scan_results") \
             .select("*") \
             .order("scan_date", desc=True) \
-            .order("time", desc=True) \
+            .order("scan_time", desc=True) \
             .limit(300) \
             .execute()
         
-        df_manual = pd.DataFrame(manual_res.data)
-        if not df_manual.empty:
+        if manual_res.data:
+            df_manual = pd.DataFrame(manual_res.data)
             df_manual['source'] = 'Manual'
-            # Combine scan_date and time into scanned_at
-            df_manual['scanned_at'] = pd.to_datetime(df_manual['scan_date'] + ' ' + df_manual['time'])
+            # Combine scan_date and scan_time into scanned_at
+            df_manual['scanned_at'] = pd.to_datetime(df_manual['scan_date'] + ' ' + df_manual['scan_time'])
             # Ensure standard column names
             df_manual = df_manual.rename(columns={
                 'signal_type': 'signal'
@@ -598,20 +601,23 @@ def fetch_market_scan_results():
                     df_manual[col] = None
 
         # 3. Hybrid Aggregation
-        combined = pd.concat([df_auto, df_manual], ignore_index=True)
-        if combined.empty:
+        if df_auto.empty and df_manual.empty:
             return pd.DataFrame()
+            
+        combined = pd.concat([df_auto, df_manual], ignore_index=True)
 
         # 4. Cleanup & Unification: Ensure final score is in 'score' column
-        # Prioritize conviction_score if available
-        if 'conviction_score' in combined.columns:
-            combined['score'] = combined['conviction_score'].fillna(combined['score'] if 'score' in combined.columns else combined['bull_score'])
-        elif 'bull_score' in combined.columns and 'score' not in combined.columns:
-            combined['score'] = combined['bull_score']
+        if not combined.empty:
+            if 'conviction_score' in combined.columns:
+                combined['score'] = combined['conviction_score'].fillna(
+                    combined['score'] if 'score' in combined.columns else combined['bull_score']
+                )
+            elif 'bull_score' in combined.columns and 'score' not in combined.columns:
+                combined['score'] = combined['bull_score']
 
-        # 5. Deduplicate: Latest Scanned Timestamp per Ticker
-        combined = combined.sort_values(by='scanned_at', ascending=False)
-        combined = combined.drop_duplicates(subset=['ticker'], keep='first')
+            # 5. Deduplicate: Latest Scanned Timestamp per Ticker
+            combined = combined.sort_values(by='scanned_at', ascending=False)
+            combined = combined.drop_duplicates(subset=['ticker'], keep='first')
             
         return combined
 
@@ -2248,7 +2254,7 @@ if st.session_state['batch_results'] is not None:
                         else:
                             st.error(f"ไม่สามารถดึงข้อมูลราคาของ {sel_hist_ticker} ได้")
             else:
-                st.info("ℹ️ ยังไม่มีข้อมูลในระบบ Auto Scan (ตรวจสอบว่ารัน GitHub Actions หรือยัง)")
+                st.info("ℹ️ ยังไม่มีข้อมูลการสแกนในระบบ (กรุณากด Run SET100 Batch Scan หรือรอระบบ Auto Scan)")
 
         with main_tabs[6]: # Advanced Tools / More Features
             st.info("🛠️ Advanced Tools & Strategy Builder")
