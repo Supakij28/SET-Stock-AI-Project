@@ -333,37 +333,57 @@ def validate_performance(days_forward=3):
 def save_scan_result(data):
     """Save a single scan result to Supabase, supporting optional labeling."""
     if not supabase:
-        return
+        return False
         
     try:
-        # Base columns map
+        # Sanitized Data: Convert to Native Python Types and handle NaN
+        def clean_val(v):
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                return None
+            if isinstance(v, (np.integer, np.floating)):
+                return v.item()
+            if isinstance(v, np.bool_):
+                return bool(v)
+            return v
+
         payload = {
-            "ticker": data['ticker'],
-            "scan_date": data['date'],
-            "scan_time": data['time'],
-            "price": data['price'],
-            "bull_score": data['bull_score'],
-            "bear_score": data['bear_score'],
-            "score_diff": data['score_diff'],
-            "signal_type": data['signal_type'],
-            "market_regime": data['market_regime'],
-            "relative_vol": data['rel_vol'],
-            "rsi": data['rsi']
+            "ticker": clean_val(data.get('ticker')),
+            "scan_date": clean_val(data.get('date')),
+            "scan_time": clean_val(data.get('time')),
+            "price": clean_val(data.get('price')),
+            "bull_score": clean_val(data.get('bull_score')),
+            "bear_score": clean_val(data.get('bear_score')),
+            "score_diff": clean_val(data.get('score_diff')),
+            "signal_type": clean_val(data.get('signal_type')),
+            "market_regime": clean_val(data.get('market_regime')),
+            "relative_vol": clean_val(data.get('rel_vol')),
+            "rsi": clean_val(data.get('rsi'))
         }
         
         # Optional columns
-        if 'mtf_status' in data: payload['mtf_status'] = data['mtf_status']
-        if 'mtf_score' in data: payload['mtf_score'] = data['mtf_score']
-        if 'conviction_score' in data: payload['conviction_score'] = data['conviction_score']
-        if 'outcome_label' in data: payload['outcome_label'] = data['outcome_label']
-        if 'outcome_pct' in data: payload['outcome_pct'] = data['outcome_pct']
-        if 'verified_date' in data: payload['verified_date'] = data['verified_date']
+        if 'mtf_status' in data: payload['mtf_status'] = clean_val(data['mtf_status'])
+        if 'mtf_score' in data: payload['mtf_score'] = clean_val(data['mtf_score'])
+        if 'conviction_score' in data: payload['conviction_score'] = clean_val(data['conviction_score'])
+        if 'outcome_label' in data: payload['outcome_label'] = clean_val(data['outcome_label'])
+        if 'outcome_pct' in data: payload['outcome_pct'] = clean_val(data['outcome_pct'])
+        if 'verified_date' in data: payload['verified_date'] = clean_val(data['verified_date'])
+        
+        # Debug Logging: Print 1st payload sample to console
+        if not hasattr(save_scan_result, "_logged_sample"):
+            print(f"DEBUG: Sample Payload for Supabase: {json.dumps(payload, indent=2, default=str)}")
+            save_scan_result._logged_sample = True
             
         res = supabase.table("scan_results").insert(payload).execute()
+        
+        # Check for errors in response
         if hasattr(res, 'error') and res.error:
-            st.error(f"❌ Database Error ({data['ticker']}): {res.error}")
+            st.error(f"❌ บันทึกลง Supabase ล้มเหลว ({payload['ticker']}): {res.error}")
+            return False
+            
+        return True
     except Exception as e:
-        st.error(f"⚠️ Failed to save scan result for {data.get('ticker', 'Unknown')}: {e}")
+        st.error(f"❌ บันทึกลง Supabase ล้มเหลว ({data.get('ticker', 'Unknown')}): {e}")
+        return False
 
 def get_historical_scores(ticker, limit=5):
     """Retrieve historical scores for a ticker from Supabase."""
@@ -1715,6 +1735,10 @@ def run_set100_batch_scan(tickers, target_date=None):
     batch_time = batch_now.strftime("%H:%M:%S")
     batch_update_str = batch_now.strftime("%Y-%m-%d %H:%M")
     
+    # Reset debug logger for save_scan_result
+    if hasattr(save_scan_result, "_logged_sample"):
+        delattr(save_scan_result, "_logged_sample")
+    
     # Pre-fetch all sectors in bulk
     status_text.text("🔄 Initializing Sector Information...")
     try:
@@ -1729,6 +1753,7 @@ def run_set100_batch_scan(tickers, target_date=None):
     perf_stats = get_signal_performance_stats()
     pos_count = 0
     neg_count = 0
+    success_count = 0
     
     for i, ticker in enumerate(tickers):
         try:
@@ -2089,9 +2114,14 @@ def run_set100_batch_scan(tickers, target_date=None):
                 'sector_rs': srs_val # Optional: add to DB if schema supports
             }
             db_data.update(row['outcome_data'])
-            save_scan_result(db_data)
+            if save_scan_result(db_data):
+                success_count += 1
         
         results = final_results
+        if success_count > 0:
+            st.success(f"✅ บันทึกผลสแกนลงตาราง scan_results จำนวน {success_count} รายการเรียบร้อยแล้ว")
+        else:
+            st.warning("⚠️ ไม่สามารถบันทึกข้อมูลลง Supabase ได้ โปรดตรวจสอบ Error บนหน้าจอ")
 
     status_text.text("Scan Complete!")
     
