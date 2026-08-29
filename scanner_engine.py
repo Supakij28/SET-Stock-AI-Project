@@ -148,7 +148,7 @@ def get_signal_performance_stats(supabase=None):
     try:
         response = supabase.table("scan_results") \
             .select("signal_type, outcome_label") \
-            .is_("outcome_label", "not.null") \
+            .not_.is_("outcome_label", "null") \
             .execute()
         df = pd.DataFrame(response.data)
         
