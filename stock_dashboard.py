@@ -269,6 +269,9 @@ def save_analysis_snapshot(batch_df, market_regime):
             })
             
         if log_entries:
+            # STRICT RULE: Remove 'id' from entries to allow auto-increment PK
+            for entry in log_entries:
+                entry.pop('id', None)
             supabase.table("trading_log").insert(log_entries).execute()
             
     except Exception as e:
@@ -367,6 +370,9 @@ def save_scan_result(data):
         if 'outcome_label' in data: payload['outcome_label'] = clean_val(data['outcome_label'])
         if 'outcome_pct' in data: payload['outcome_pct'] = clean_val(data['outcome_pct'])
         if 'verified_date' in data: payload['verified_date'] = clean_val(data['verified_date'])
+        
+        # STRICT RULE: Remove 'id' to allow Supabase auto-increment PK
+        payload.pop('id', None)
         
         # Debug Logging: Print 1st payload sample to console
         if not hasattr(save_scan_result, "_logged_sample"):
