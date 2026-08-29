@@ -571,7 +571,8 @@ def fetch_market_scan_results():
         if auto_res.data:
             df_auto = pd.DataFrame(auto_res.data)
             df_auto['source'] = 'Auto'
-            df_auto['scanned_at'] = pd.to_datetime(df_auto['scanned_at'])
+            # Convert to Bangkok time and make naive for consistent concatenation
+            df_auto['scanned_at'] = pd.to_datetime(df_auto['scanned_at']).dt.tz_convert(SET_TZ).dt.tz_localize(None)
             # Ensure standard column names
             df_auto = df_auto.rename(columns={
                 'close_price': 'price',
@@ -579,26 +580,44 @@ def fetch_market_scan_results():
             })
 
         # 2. Fetch from scan_results (Manual)
-        manual_res = supabase.table("scan_results") \
-            .select("*") \
-            .order("scan_date", desc=True) \
-            .order("scan_time", desc=True) \
-            .limit(300) \
-            .execute()
-        
-        if manual_res.data:
-            df_manual = pd.DataFrame(manual_res.data)
-            df_manual['source'] = 'Manual'
-            # Combine scan_date and scan_time into scanned_at
-            df_manual['scanned_at'] = pd.to_datetime(df_manual['scan_date'] + ' ' + df_manual['scan_time'])
-            # Ensure standard column names
-            df_manual = df_manual.rename(columns={
-                'signal_type': 'signal'
-            })
-            # Add missing columns with None for alignment
-            for col in ['strategy', 'change_percent', 'volume', 'sector', 'is_recovery', 'is_pinbar', 'is_silent_accum']:
-                if col not in df_manual.columns:
-                    df_manual[col] = None
+        try:
+            manual_res = supabase.table("scan_results") \
+                .select("*") \
+                .order("scan_date", desc=True) \
+                .limit(300) \
+                .execute()
+            
+            if manual_res.data:
+                df_manual = pd.DataFrame(manual_res.data)
+                df_manual['source'] = 'Manual'
+                
+                # Robustly find date and time columns
+                d_col = 'scan_date' if 'scan_date' in df_manual.columns else ('date' if 'date' in df_manual.columns else None)
+                t_col = 'scan_time' if 'scan_time' in df_manual.columns else ('time' if 'time' in df_manual.columns else None)
+                
+                if d_col and t_col:
+                    df_manual['scanned_at'] = pd.to_datetime(df_manual[d_col].astype(str) + ' ' + df_manual[t_col].fillna('00:00:00').astype(str)).dt.tz_localize(None)
+                elif d_col:
+                    df_manual['scanned_at'] = pd.to_datetime(df_manual[d_col].astype(str)).dt.tz_localize(None)
+                else:
+                    # Fallback to created_at if available
+                    c_col = 'created_at' if 'created_at' in df_manual.columns else None
+                    if c_col:
+                        df_manual['scanned_at'] = pd.to_datetime(df_manual[c_col]).dt.tz_localize(None)
+                    else:
+                        df_manual['scanned_at'] = pd.Timestamp.now().normalize()
+                
+                # Ensure standard column names
+                df_manual = df_manual.rename(columns={
+                    'signal_type': 'signal'
+                })
+                # Add missing columns with None for alignment
+                for col in ['strategy', 'change_percent', 'volume', 'sector', 'is_recovery', 'is_pinbar', 'is_silent_accum']:
+                    if col not in df_manual.columns:
+                        df_manual[col] = None
+        except Exception as e:
+            print(f"Manual fetch error: {e}")
+            df_manual = pd.DataFrame()
 
         # 3. Hybrid Aggregation
         if df_auto.empty and df_manual.empty:
@@ -662,7 +681,7 @@ def fetch_ticker_combined_history(ticker, days=90):
             
         df2 = pd.DataFrame(res2.data)
         if not df2.empty:
-            df2['scanned_at'] = pd.to_datetime(df2['scanned_at']).dt.tz_localize(None)
+            df2['scanned_at'] = pd.to_datetime(df2['scanned_at']).dt.tz_convert(SET_TZ).dt.tz_localize(None)
             df2['source'] = 'auto'
             
         # Combine
@@ -2047,7 +2066,7 @@ if st.session_state['batch_results'] is not None:
             
             if not combined_df.empty:
                 # 1. Metric Summary
-                last_scan = combined_df['scanned_at'].max().astimezone(SET_TZ)
+                last_scan = combined_df['scanned_at'].max()
                 buy_count = len(combined_df[combined_df['signal'] == 'BUY'])
                 wait_count = len(combined_df[combined_df['signal'].str.contains('WAIT', na=False)])
                 
