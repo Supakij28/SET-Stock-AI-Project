@@ -6,6 +6,11 @@ import os
 import requests
 import json
 import sys
+import os
+
+# Add root directory to sys.path to import scanner_engine correctly in GitHub Actions
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from datetime import datetime, time
 import pytz
 import holidays
