@@ -139,10 +139,13 @@ def get_silent_accum_insights(limit=100):
         if res1.data:
             df1 = pd.DataFrame(res1.data)
             df1['source'] = 'manual'
-            # Standardize timestamp for historical snapshot sorting
+            # Standardize timestamp for historical snapshot sorting (Manual is already Bangkok time)
             df1['full_timestamp'] = pd.to_datetime(df1['scan_date'].astype(str) + ' ' + df1['scan_time'].fillna('00:00:00').astype(str))
+            # Ensure naive
+            if df1['full_timestamp'].dt.tz is not None:
+                df1['full_timestamp'] = df1['full_timestamp'].dt.tz_localize(None)
             df1 = df1.rename(columns={'scan_date': 'signal_date', 'signal_type': 'signal', 'bull_score': 'score'})
-            df1['signal_date'] = pd.to_datetime(df1['signal_date']).dt.date
+            df1['signal_date'] = df1['full_timestamp'].dt.date
         
         # 2. Fetch from auto_scan_results (Auto)
         res2 = supabase.table("auto_scan_results") \
@@ -163,7 +166,8 @@ def get_silent_accum_insights(limit=100):
             if not df2.empty:
                 df2['source'] = 'auto'
                 # Standardize timestamp for historical snapshot sorting
-                df2['full_timestamp'] = pd.to_datetime(df2['scanned_at'])
+                # Convert UTC (from Supabase) to Bangkok and strip TZ to make it naive
+                df2['full_timestamp'] = pd.to_datetime(df2['scanned_at'], utc=True).dt.tz_convert(SET_TZ).dt.tz_localize(None)
                 df2['signal_date'] = df2['full_timestamp'].dt.date
                 df2 = df2.rename(columns={'close_price': 'price'})
         
@@ -173,8 +177,8 @@ def get_silent_accum_insights(limit=100):
             return None
             
         # 3. Historical Snapshot Enforcement:
-        # Normalize timezone to naive for stable comparison/sorting
-        combined['full_timestamp'] = pd.to_datetime(combined['full_timestamp']).dt.tz_localize(None)
+        # full_timestamp is already standardized to naive Bangkok time in both df1 and df2
+        combined['full_timestamp'] = pd.to_datetime(combined['full_timestamp'], errors='coerce')
         
         # Sort by timestamp ASCENDING to keep the FIRST time the signal appeared that day (Snapshot)
         combined = combined.sort_values(['full_timestamp'], ascending=True)
