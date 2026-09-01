@@ -131,7 +131,7 @@ def get_silent_accum_insights(limit=100):
         
         # 1. Fetch from scan_results (Manual)
         res1 = supabase.table("scan_results") \
-            .select("ticker, scan_date, price, signal_type, bull_score") \
+            .select("ticker, scan_date, scan_time, price, signal_type, bull_score") \
             .eq("signal_type", "SILENT ACCUM") \
             .gte("scan_date", start_date_str) \
             .execute()
@@ -139,6 +139,8 @@ def get_silent_accum_insights(limit=100):
         if res1.data:
             df1 = pd.DataFrame(res1.data)
             df1['source'] = 'manual'
+            # Standardize timestamp for historical snapshot sorting
+            df1['full_timestamp'] = pd.to_datetime(df1['scan_date'].astype(str) + ' ' + df1['scan_time'].fillna('00:00:00').astype(str))
             df1 = df1.rename(columns={'scan_date': 'signal_date', 'signal_type': 'signal', 'bull_score': 'score'})
             df1['signal_date'] = pd.to_datetime(df1['signal_date']).dt.date
         
@@ -150,7 +152,7 @@ def get_silent_accum_insights(limit=100):
             
         if res2.data:
             df2 = pd.DataFrame(res2.data)
-            # Robust Filtering: Handle case sensitivity and NaN values
+            # Robust Filtering: Only records that were 'SILENT ACCUM' at the time of scan
             is_silent_mask = (
                 (df2['strategy'].fillna('').str.upper() == 'SILENT ACCUM') | 
                 (df2['signal'].fillna('').str.upper() == 'SILENT ACCUM') | 
@@ -160,8 +162,9 @@ def get_silent_accum_insights(limit=100):
             
             if not df2.empty:
                 df2['source'] = 'auto'
-                # Ensure correct date conversion for Supabase TIMESTAMPTZ
-                df2['signal_date'] = pd.to_datetime(df2['scanned_at']).dt.date
+                # Standardize timestamp for historical snapshot sorting
+                df2['full_timestamp'] = pd.to_datetime(df2['scanned_at'])
+                df2['signal_date'] = df2['full_timestamp'].dt.date
                 df2 = df2.rename(columns={'close_price': 'price'})
         
         # Combine
@@ -169,9 +172,18 @@ def get_silent_accum_insights(limit=100):
         if combined.empty:
             return None
             
-        # Deduplicate by ticker and date (keep latest source/entry)
-        combined = combined.sort_values(['signal_date', 'score'], ascending=[False, False])
+        # 3. Historical Snapshot Enforcement:
+        # Normalize timezone to naive for stable comparison/sorting
+        combined['full_timestamp'] = pd.to_datetime(combined['full_timestamp']).dt.tz_localize(None)
+        
+        # Sort by timestamp ASCENDING to keep the FIRST time the signal appeared that day (Snapshot)
+        combined = combined.sort_values(['full_timestamp'], ascending=True)
+        
+        # Unique Constraint per Day: Keep the earliest signal of each ticker per day
         combined = combined.drop_duplicates(subset=['ticker', 'signal_date'], keep='first')
+        
+        # Final sort for display: Latest signals first
+        combined = combined.sort_values(['signal_date', 'full_timestamp'], ascending=[False, False])
         
         # Limit to requested number of signals
         signals = combined.head(limit)
