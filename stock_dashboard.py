@@ -2159,82 +2159,79 @@ if st.session_state['batch_results'] is not None:
                         ticker_sa = get_silent_accum_insights(limit=None, ticker_filter=sel_sa_ticker)
                     
                     if ticker_sa is not None and not ticker_sa.empty:
-                        col_a, col_b = st.columns([1, 2])
-                        
-                        with col_a:
-                            st.write(f"**Signal History: {sel_sa_ticker}**")
-                            st.dataframe(
-                                ticker_sa[['signal_date', 'score', 'days_to_move', 'max_gain_t5']]
-                                .style.format({
-                                    'max_gain_t5': '{:.2f}%',
-                                    'days_to_move': '{:.0f}',
-                                    'score': '{:.1f}'
-                                }, na_rep='Pending'),
-                                use_container_width=True
-                            )
-                            
-                        with col_b:
-                            st.write(f"**Price Chart with SILENT ACCUM Markers**")
-                            with st.spinner(f"ดึงข้อมูลกราฟสำหรับ {sel_sa_ticker}..."):
-                                hist_price_raw = get_stock_data(sel_sa_ticker)
-                                if hist_price_raw is not None and not hist_price_raw.empty:
-                                    # Standardize for plotting (Last 180 days for better context)
-                                    df_plot = hist_price_raw.tail(180).copy()
-                                    df_plot.index = pd.to_datetime(df_plot.index)
-                                    
-                                    # Create subplots: Price (Candlestick) + Volume
-                                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                                                       vertical_spacing=0.05, row_heights=[0.7, 0.3])
-                                    
-                                    # 1. Candlestick
-                                    fig.add_trace(go.Candlestick(
-                                        x=df_plot.index,
-                                        open=df_plot['Open'],
-                                        high=df_plot['High'],
-                                        low=df_plot['Low'],
-                                        close=df_plot['Close'],
-                                        name='Price'
+                        # 1. Price Chart with SILENT ACCUM Markers (Full Width)
+                        st.write(f"**Price Chart with SILENT ACCUM Markers: {sel_sa_ticker}**")
+                        with st.spinner(f"ดึงข้อมูลกราฟสำหรับ {sel_sa_ticker}..."):
+                            hist_price_raw = get_stock_data(sel_sa_ticker)
+                            if hist_price_raw is not None and not hist_price_raw.empty:
+                                # Standardize for plotting (Last 180 days for better context)
+                                df_plot = hist_price_raw.tail(180).copy()
+                                df_plot.index = pd.to_datetime(df_plot.index)
+                                
+                                # Create subplots: Price (Candlestick) + Volume
+                                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                                                   vertical_spacing=0.05, row_heights=[0.7, 0.3])
+                                
+                                # 1. Candlestick
+                                fig.add_trace(go.Candlestick(
+                                    x=df_plot.index,
+                                    open=df_plot['Open'],
+                                    high=df_plot['High'],
+                                    low=df_plot['Low'],
+                                    close=df_plot['Close'],
+                                    name='Price'
+                                ), row=1, col=1)
+                                
+                                # 2. Volume
+                                fig.add_trace(go.Bar(
+                                    x=df_plot.index, 
+                                    y=df_plot['Volume'],
+                                    name='Volume',
+                                    marker_color='rgba(100, 100, 100, 0.5)'
+                                ), row=2, col=1)
+                                
+                                # 3. Add SILENT ACCUM Markers
+                                sig_dates = pd.to_datetime(ticker_sa['signal_date']).tolist()
+                                df_plot_dates = df_plot.index.normalize().date
+                                marker_indices = [i for i, d in enumerate(df_plot_dates) if d in [sd.date() for sd in sig_dates]]
+                                markers = df_plot.iloc[marker_indices]
+                                
+                                if not markers.empty:
+                                    fig.add_trace(go.Scatter(
+                                        x=markers.index,
+                                        y=markers['Low'] * 0.98,
+                                        mode='markers',
+                                        marker=dict(symbol='triangle-up', size=15, color='#3b82f6', line=dict(width=2, color='white')),
+                                        name='SILENT ACCUM Signal',
+                                        hovertemplate='<b>SILENT ACCUM</b><br>Date: %{x}<br>Price: %{y:.2f}'
                                     ), row=1, col=1)
-                                    
-                                    # 2. Volume
-                                    fig.add_trace(go.Bar(
-                                        x=df_plot.index, 
-                                        y=df_plot['Volume'],
-                                        name='Volume',
-                                        marker_color='rgba(100, 100, 100, 0.5)'
-                                    ), row=2, col=1)
-                                    
-                                    # 3. Add SILENT ACCUM Markers
-                                    # Map signals to dates in df_plot
-                                    sig_dates = pd.to_datetime(ticker_sa['signal_date']).tolist()
-                                    # Normalize dates for matching
-                                    df_plot_dates = df_plot.index.normalize().date
-                                    marker_indices = [i for i, d in enumerate(df_plot_dates) if d in [sd.date() for sd in sig_dates]]
-                                    markers = df_plot.iloc[marker_indices]
-                                    
-                                    if not markers.empty:
-                                        fig.add_trace(go.Scatter(
-                                            x=markers.index,
-                                            y=markers['Low'] * 0.98,
-                                            mode='markers',
-                                            marker=dict(symbol='triangle-up', size=15, color='#3b82f6', line=dict(width=2, color='white')),
-                                            name='SILENT ACCUM Signal',
-                                            hovertemplate='<b>SILENT ACCUM</b><br>Date: %{x}<br>Price: %{y:.2f}'
-                                        ), row=1, col=1)
-                                    
-                                    fig.update_layout(
-                                        height=600,
-                                        margin=dict(t=30, b=30, l=30, r=30),
-                                        template='plotly_dark',
-                                        xaxis_rangeslider_visible=False,
-                                        showlegend=True,
-                                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                                    )
-                                    st.plotly_chart(fig, use_container_width=True)
-                                else:
-                                    st.warning(f"ไม่พบข้อมูลราคาย้อนหลังสำหรับ {sel_sa_ticker}")
+                                
+                                fig.update_layout(
+                                    height=650, # Updated height
+                                    margin=dict(t=30, b=30, l=30, r=30),
+                                    template='plotly_dark',
+                                    xaxis_rangeslider_visible=False,
+                                    showlegend=True,
+                                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+                            else:
+                                st.warning(f"ไม่พบข้อมูลราคาย้อนหลังสำหรับ {sel_sa_ticker}")
+                        
+                        # 2. Signal History Table (Below Chart)
+                        st.write(f"**Signal History: {sel_sa_ticker}**")
+                        st.dataframe(
+                            ticker_sa[['signal_date', 'score', 'days_to_move', 'max_gain_t5']]
+                            .style.format({
+                                'max_gain_t5': '{:.2f}%',
+                                'days_to_move': '{:.0f}',
+                                'score': '{:.1f}'
+                            }, na_rep='Pending'),
+                            use_container_width=True
+                        )
                     else:
                         st.info(f"ไม่พบประวัติสัญญาณ SILENT ACCUM สำหรับ {sel_sa_ticker} ในช่วง 90 วันที่ผ่านมา")
+
             else:
                 st.warning("ยังไม่มีข้อมูล SILENT ACCUM เพียงพอสำหรับการวิเคราะห์")
 
