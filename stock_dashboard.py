@@ -132,42 +132,34 @@ def get_silent_accum_insights(limit=100):
         # 1. Fetch from scan_results (Manual)
         res1 = supabase.table("scan_results") \
             .select("ticker, scan_date, scan_time, price, signal_type, bull_score") \
-            .eq("signal_type", "SILENT ACCUM") \
+            .or_("signal_type.eq.SILENT ACCUM,strategy.eq.SILENT ACCUM") \
             .gte("scan_date", start_date_str) \
             .execute()
         
         if res1.data:
             df1 = pd.DataFrame(res1.data)
             df1['source'] = 'manual'
-            # Standardize timestamp for historical snapshot sorting (Manual is already Bangkok time)
+            # Standardize timestamp for historical snapshot sorting (Bangkok time)
             df1['full_timestamp'] = pd.to_datetime(df1['scan_date'].astype(str) + ' ' + df1['scan_time'].fillna('00:00:00').astype(str))
-            # Ensure naive
-            if df1['full_timestamp'].dt.tz is not None:
-                df1['full_timestamp'] = df1['full_timestamp'].dt.tz_localize(None)
+            df1['full_timestamp'] = df1['full_timestamp'].dt.tz_localize(None)
             df1 = df1.rename(columns={'scan_date': 'signal_date', 'signal_type': 'signal', 'bull_score': 'score'})
             df1['signal_date'] = df1['full_timestamp'].dt.date
         
         # 2. Fetch from auto_scan_results (Auto)
+        # UTC to Local Normalization requested
         res2 = supabase.table("auto_scan_results") \
             .select("ticker, scanned_at, close_price, signal, strategy, is_silent_accum, score") \
+            .or_("signal.eq.SILENT ACCUM,strategy.eq.SILENT ACCUM,is_silent_accum.eq.true") \
             .gte("scanned_at", start_dt.isoformat()) \
             .execute()
             
         if res2.data:
             df2 = pd.DataFrame(res2.data)
-            # Robust Filtering: Only records that were 'SILENT ACCUM' at the time of scan
-            is_silent_mask = (
-                (df2['strategy'].fillna('').str.upper() == 'SILENT ACCUM') | 
-                (df2['signal'].fillna('').str.upper() == 'SILENT ACCUM') | 
-                (df2['is_silent_accum'] == True)
-            )
-            df2 = df2[is_silent_mask].copy()
-            
             if not df2.empty:
                 df2['source'] = 'auto'
-                # Standardize timestamp for historical snapshot sorting
-                # Convert UTC (from Supabase) to Bangkok and strip TZ to make it naive
+                # Convert UTC (from Supabase) to Bangkok Timezone
                 df2['full_timestamp'] = pd.to_datetime(df2['scanned_at'], utc=True).dt.tz_convert(SET_TZ).dt.tz_localize(None)
+                # Extract date after timezone conversion
                 df2['signal_date'] = df2['full_timestamp'].dt.date
                 df2 = df2.rename(columns={'close_price': 'price'})
         
@@ -176,17 +168,17 @@ def get_silent_accum_insights(limit=100):
         if combined.empty:
             return None
             
-        # 3. Historical Snapshot Enforcement:
-        # full_timestamp is already standardized to naive Bangkok time in both df1 and df2
+        # 3. Proper Hybrid Merge & Sorting:
+        # Standardize all timestamps to Datetime Object
         combined['full_timestamp'] = pd.to_datetime(combined['full_timestamp'], errors='coerce')
         
-        # Sort by timestamp ASCENDING to keep the FIRST time the signal appeared that day (Snapshot)
-        combined = combined.sort_values(['full_timestamp'], ascending=True)
+        # Sort by timestamp DESCENDING to ensure latest signals (2026-09-01) are at the top
+        combined = combined.sort_values(by='full_timestamp', ascending=False)
         
-        # Unique Constraint per Day: Keep the earliest signal of each ticker per day
+        # Deduplication: Keep the latest record for each ticker per day
         combined = combined.drop_duplicates(subset=['ticker', 'signal_date'], keep='first')
         
-        # Final sort for display: Latest signals first
+        # Final Sort for Display: Ensure signal_date is descending
         combined = combined.sort_values(['signal_date', 'full_timestamp'], ascending=[False, False])
         
         # Limit to requested number of signals
