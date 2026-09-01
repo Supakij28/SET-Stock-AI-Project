@@ -132,7 +132,7 @@ def get_silent_accum_insights(limit=100):
         # 1. Fetch from scan_results (Manual)
         res1 = supabase.table("scan_results") \
             .select("ticker, scan_date, scan_time, price, signal_type, bull_score") \
-            .or_("signal_type.eq.SILENT ACCUM,strategy.eq.SILENT ACCUM") \
+            .eq("signal_type", "SILENT ACCUM") \
             .gte("scan_date", start_date_str) \
             .execute()
         
