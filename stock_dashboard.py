@@ -146,22 +146,26 @@ def get_silent_accum_insights(limit=100):
             df1['signal_date'] = df1['full_timestamp'].dt.date
         
         # 2. Fetch from auto_scan_results (Auto)
-        # UTC to Local Normalization requested
+        # Strict Signal Filter: Only records that were 'SILENT ACCUM' at the time of scan
         res2 = supabase.table("auto_scan_results") \
             .select("ticker, scanned_at, close_price, signal, strategy, is_silent_accum, score") \
-            .or_("signal.eq.SILENT ACCUM,strategy.eq.SILENT ACCUM,is_silent_accum.eq.true") \
+            .eq("signal", "SILENT ACCUM") \
             .gte("scanned_at", start_dt.isoformat()) \
             .execute()
             
         if res2.data:
             df2 = pd.DataFrame(res2.data)
             if not df2.empty:
-                df2['source'] = 'auto'
-                # Convert UTC (from Supabase) to Bangkok Timezone
-                df2['full_timestamp'] = pd.to_datetime(df2['scanned_at'], utc=True).dt.tz_convert(SET_TZ).dt.tz_localize(None)
-                # Extract date after timezone conversion
-                df2['signal_date'] = df2['full_timestamp'].dt.date
-                df2 = df2.rename(columns={'close_price': 'price'})
+                # Ensure strict signal filtering in pandas too
+                df2 = df2[df2['signal'].fillna('').str.upper() == 'SILENT ACCUM'].copy()
+                
+                if not df2.empty:
+                    df2['source'] = 'auto'
+                    # Convert UTC (from Supabase) to Bangkok Timezone
+                    df2['full_timestamp'] = pd.to_datetime(df2['scanned_at'], utc=True).dt.tz_convert(SET_TZ).dt.tz_localize(None)
+                    # Extract date after timezone conversion
+                    df2['signal_date'] = df2['full_timestamp'].dt.date
+                    df2 = df2.rename(columns={'close_price': 'price'})
         
         # Combine
         combined = pd.concat([df1, df2], ignore_index=True)
@@ -211,6 +215,7 @@ def get_silent_accum_insights(limit=100):
                             results.append({
                                 'ticker': ticker,
                                 'signal_date': sig['signal_date'],
+                                'full_timestamp': sig['full_timestamp'],
                                 'days_to_move': day_idx + 1,
                                 'max_gain_t5': (test_df.iloc[:5]['High'].max() / entry_price - 1) * 100 if len(test_df) >= 5 else None,
                                 'win_t5': 1 if (len(test_df) >= 5 and (test_df.iloc[:5]['High'].max() / entry_price - 1) * 100 >= 1.0) else 0
@@ -223,6 +228,7 @@ def get_silent_accum_insights(limit=100):
                         results.append({
                             'ticker': ticker,
                             'signal_date': sig['signal_date'],
+                            'full_timestamp': sig['full_timestamp'],
                             'days_to_move': None,
                             'max_gain_t5': (test_df.iloc[:5]['High'].max() / entry_price - 1) * 100,
                             'win_t5': 1 if (test_df.iloc[:5]['High'].max() / entry_price - 1) * 100 >= 1.0 else 0
@@ -232,6 +238,7 @@ def get_silent_accum_insights(limit=100):
                     results.append({
                         'ticker': ticker,
                         'signal_date': sig['signal_date'],
+                        'full_timestamp': sig['full_timestamp'],
                         'days_to_move': None,
                         'max_gain_t5': None,
                         'win_t5': 0
@@ -241,6 +248,7 @@ def get_silent_accum_insights(limit=100):
                 results.append({
                     'ticker': ticker,
                     'signal_date': sig['signal_date'],
+                    'full_timestamp': sig['full_timestamp'],
                     'days_to_move': None,
                     'max_gain_t5': None,
                     'win_t5': 0
@@ -249,7 +257,8 @@ def get_silent_accum_insights(limit=100):
         # Final Sort: Ensure signal_date is descending for the report
         res_df = pd.DataFrame(results)
         if not res_df.empty:
-            res_df = res_df.sort_values('signal_date', ascending=False)
+            res_df = res_df.sort_values(by=['signal_date', 'full_timestamp'], ascending=[False, False])
+            res_df = res_df.reset_index(drop=True)
         return res_df if not res_df.empty else None
     except Exception as e:
         st.error(f"Error in SILENT ACCUM analysis: {e}")
