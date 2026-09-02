@@ -137,6 +137,7 @@ def scan_single_ticker(ticker, scanned_at):
 def run_scanner():
     print(f"--- 🚀 Auto Market Scanner Started at {datetime.now(SET_TZ)} ---")
     
+    # [STRICT IMMUTABLE LOG] Use current execution time for all records in this batch
     now = datetime.now(SET_TZ)
     scanned_at = now.isoformat()
 
@@ -183,14 +184,14 @@ def run_scanner():
         )
         
         # Prepare final payload for auto_scan_results
-        # Use conviction_score as the primary 'score' to match Unified Report
+        # [STRICT IMMUTABLE LOG] Always use the scan execution time (scanned_at)
         payload = {
             'ticker': ticker,
             'scanned_at': scanned_at,
             'score': float(conviction_score),
-            'bull_score': float(row['bull_score']), # Keep original for reference if needed
+            'bull_score': float(row['bull_score']), 
             'signal': row['signal'],
-            'strategy': strategy, # Use updated strategy from conviction engine
+            'strategy': strategy, 
             'sector': row['sector'],
             'close_price': float(row['close_price']),
             'change_percent': float(row['change_percent']),
@@ -213,16 +214,18 @@ def run_scanner():
 
     if final_payloads and supabase:
         try:
-            print(f"📤 Uploading {len(final_payloads)} results to Supabase table 'auto_scan_results'...")
-            response = supabase.table("auto_scan_results").upsert(final_payloads).execute()
+            # [STRICT IMMUTABLE LOG] Use INSERT instead of UPSERT to prevent overwriting historical data
+            print(f"📤 Inserting {len(final_payloads)} new results to Supabase table 'auto_scan_results'...")
+            response = supabase.table("auto_scan_results").insert(final_payloads).execute()
             
             if hasattr(response, 'data') and response.data:
-                print(f"✅ Successfully uploaded {len(response.data)} records to Supabase!")
+                print(f"✅ Successfully inserted {len(response.data)} new records to Supabase!")
             else:
-                print("✅ Upload completed (Check Supabase for verification).")
+                print("✅ Insertion completed.")
                 
         except Exception as e:
-            print(f"❌ Supabase Error during upload: {e}")
+            print(f"❌ Supabase Error during insert: {e}")
+
     else:
         if not supabase:
             print("⚠️ Supabase credentials not found. Results not uploaded.")

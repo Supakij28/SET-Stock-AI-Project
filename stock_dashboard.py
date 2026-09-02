@@ -178,9 +178,14 @@ def get_silent_accum_insights(limit=100, ticker_filter=None):
             
         # Standardize and Sort
         combined['full_timestamp'] = pd.to_datetime(combined['full_timestamp'], errors='coerce')
-        combined = combined.sort_values(by='full_timestamp', ascending=False)
+        
+        # [STRICT IMMUTABLE LOG] Deduplicate: First Signal Wins
+        # Sort by timestamp ASCENDING and keep first to preserve the earliest signal of each day
+        combined = combined.sort_values(by='full_timestamp', ascending=True)
         combined = combined.drop_duplicates(subset=['ticker', 'signal_date'], keep='first')
-        combined = combined.sort_values(['signal_date', 'full_timestamp'], ascending=[False, False])
+        
+        # Final Sort for Display: Latest signals at the top
+        combined = combined.sort_values(by=['signal_date', 'full_timestamp'], ascending=[False, False])
         
         if limit:
             signals = combined.head(limit)
