@@ -112,7 +112,7 @@ def init_log_db():
     """Verify Supabase connection for logs."""
     pass # Managed via Supabase
 
-def get_silent_accum_insights(limit=100, ticker_filter=None):
+def get_silent_accum_insights(limit=100, ticker_filter=None, deduplicate=True):
     """
     Analyze historical SILENT ACCUM signals from both manual and auto scan results.
     Optimized to fetch price data in bulk per unique ticker.
@@ -144,15 +144,16 @@ def get_silent_accum_insights(limit=100, ticker_filter=None):
         if res1.data:
             df1 = pd.DataFrame(res1.data)
             df1['source'] = 'manual'
+            df1['scan_type'] = 'MANUAL_SCAN'
             # Standardize timestamp for historical snapshot sorting (Bangkok time)
             df1['full_timestamp'] = pd.to_datetime(df1['scan_date'].astype(str) + ' ' + df1['scan_time'].fillna('00:00:00').astype(str))
             df1['full_timestamp'] = df1['full_timestamp'].dt.tz_localize(None)
-            df1 = df1.rename(columns={'scan_date': 'signal_date', 'signal_type': 'signal', 'bull_score': 'score'})
+            df1 = df1.rename(columns={'scan_date': 'signal_date', 'signal_type': 'signal', 'bull_score': 'score', 'scan_time': 'signal_time'})
             df1['signal_date'] = df1['full_timestamp'].dt.date
         
         # 2. Fetch from auto_scan_results (Auto)
         query2 = supabase.table("auto_scan_results") \
-            .select("ticker, scanned_at, close_price, signal, strategy, is_silent_accum, score") \
+            .select("ticker, scanned_at, close_price, signal, strategy, is_silent_accum, score, scan_type") \
             .eq("signal", "SILENT ACCUM") \
             .gte("scanned_at", start_dt.isoformat())
             
@@ -169,7 +170,10 @@ def get_silent_accum_insights(limit=100, ticker_filter=None):
                     df2['source'] = 'auto'
                     df2['full_timestamp'] = pd.to_datetime(df2['scanned_at'], utc=True).dt.tz_convert(SET_TZ).dt.tz_localize(None)
                     df2['signal_date'] = df2['full_timestamp'].dt.date
+                    df2['signal_time'] = df2['full_timestamp'].dt.strftime('%H:%M:%S')
                     df2 = df2.rename(columns={'close_price': 'price'})
+                    if 'scan_type' not in df2.columns:
+                        df2['scan_type'] = 'AUTO_SCAN'
         
         # Combine
         combined = pd.concat([df1, df2], ignore_index=True)
@@ -179,10 +183,11 @@ def get_silent_accum_insights(limit=100, ticker_filter=None):
         # Standardize and Sort
         combined['full_timestamp'] = pd.to_datetime(combined['full_timestamp'], errors='coerce')
         
-        # [STRICT IMMUTABLE LOG] Deduplicate: First Signal Wins
-        # Sort by timestamp ASCENDING and keep first to preserve the earliest signal of each day
-        combined = combined.sort_values(by='full_timestamp', ascending=True)
-        combined = combined.drop_duplicates(subset=['ticker', 'signal_date'], keep='first')
+        if deduplicate:
+            # [STRICT IMMUTABLE LOG] Deduplicate: First Signal Wins
+            # Sort by timestamp ASCENDING and keep first to preserve the earliest signal of each day
+            combined = combined.sort_values(by='full_timestamp', ascending=True)
+            combined = combined.drop_duplicates(subset=['ticker', 'signal_date'], keep='first')
         
         # Final Sort for Display: Latest signals at the top
         combined = combined.sort_values(by=['signal_date', 'full_timestamp'], ascending=[False, False])
@@ -222,6 +227,8 @@ def get_silent_accum_insights(limit=100, ticker_filter=None):
                             results.append({
                                 'ticker': ticker,
                                 'signal_date': sig['signal_date'],
+                                'signal_time': sig.get('signal_time', '00:00:00'),
+                                'scan_type': sig.get('scan_type', 'N/A'),
                                 'full_timestamp': sig['full_timestamp'],
                                 'score': sig['score'],
                                 'days_to_move': day_idx + 1,
@@ -235,6 +242,8 @@ def get_silent_accum_insights(limit=100, ticker_filter=None):
                         results.append({
                             'ticker': ticker,
                             'signal_date': sig['signal_date'],
+                            'signal_time': sig.get('signal_time', '00:00:00'),
+                            'scan_type': sig.get('scan_type', 'N/A'),
                             'full_timestamp': sig['full_timestamp'],
                             'score': sig['score'],
                             'days_to_move': None,
@@ -245,6 +254,8 @@ def get_silent_accum_insights(limit=100, ticker_filter=None):
                     results.append({
                         'ticker': ticker,
                         'signal_date': sig['signal_date'],
+                        'signal_time': sig.get('signal_time', '00:00:00'),
+                        'scan_type': sig.get('scan_type', 'N/A'),
                         'full_timestamp': sig['full_timestamp'],
                         'score': sig['score'],
                         'days_to_move': None,
@@ -255,6 +266,8 @@ def get_silent_accum_insights(limit=100, ticker_filter=None):
                 results.append({
                     'ticker': ticker,
                     'signal_date': sig['signal_date'],
+                    'signal_time': sig.get('signal_time', '00:00:00'),
+                    'scan_type': sig.get('scan_type', 'N/A'),
                     'full_timestamp': sig['full_timestamp'],
                     'score': sig['score'],
                     'days_to_move': None,
@@ -262,11 +275,7 @@ def get_silent_accum_insights(limit=100, ticker_filter=None):
                     'win_t5': 0
                 })
         
-        res_df = pd.DataFrame(results)
-        if not res_df.empty:
-            res_df = res_df.sort_values(by=['signal_date', 'full_timestamp'], ascending=[False, False])
-            res_df = res_df.reset_index(drop=True)
-        return res_df if not res_df.empty else None
+        return pd.DataFrame(results)
     except Exception as e:
         st.error(f"Error in SILENT ACCUM analysis: {e}")
         return None
@@ -366,6 +375,30 @@ def validate_performance(days_forward=3):
         print(f"Validation Error: {e}")
         return 0
 
+def check_recent_signal_exists(ticker, signal_type, window_minutes=15):
+    """
+    Check if a signal for this ticker has been recorded in the last X minutes.
+    Used for debouncing auto/manual scan inserts.
+    """
+    if not supabase:
+        return False
+    try:
+        now_utc = datetime.now(pytz.utc)
+        threshold = (now_utc - timedelta(minutes=window_minutes)).isoformat()
+        
+        res = supabase.table("auto_scan_results") \
+            .select("id") \
+            .eq("ticker", ticker) \
+            .eq("signal", signal_type) \
+            .gte("scanned_at", threshold) \
+            .limit(1) \
+            .execute()
+            
+        return len(res.data) > 0
+    except Exception as e:
+        print(f"Error checking recent signal: {e}")
+        return False
+
 def save_scan_result(data):
     """Save a single scan result to Supabase, supporting optional labeling."""
     if not supabase:
@@ -418,6 +451,31 @@ def save_scan_result(data):
         if hasattr(res, 'error') and res.error:
             st.error(f"❌ บันทึกลง Supabase ล้มเหลว ({payload['ticker']}): {res.error}")
             return False
+            
+        # --- NEW: Manual Scan Integration for SILENT ACCUM ---
+        # If this is a SILENT ACCUM signal, also record to auto_scan_results for intraday tracking
+        if payload['signal_type'] == 'SILENT ACCUM':
+            # 15-Minute Debounce Check
+            if not check_recent_signal_exists(payload['ticker'], 'SILENT ACCUM', window_minutes=15):
+                auto_payload = {
+                    'ticker': payload['ticker'],
+                    'scanned_at': datetime.now(SET_TZ).isoformat(), # Use Bangkok Time
+                    'score': payload.get('conviction_score', payload.get('bull_score')),
+                    'signal': 'SILENT ACCUM',
+                    'strategy': data.get('strategy', 'ACCUMULATION'),
+                    'sector': data.get('sector', 'N/A'),
+                    'close_price': payload['price'],
+                    'change_percent': data.get('change_percent'),
+                    'volume': data.get('volume'),
+                    'rsi': payload['rsi'],
+                    'is_recovery': data.get('is_recovery', False),
+                    'is_pinbar': data.get('is_pinbar', False),
+                    'is_silent_accum': True,
+                    'scan_type': 'MANUAL_SCAN'
+                }
+                # Clean and Insert
+                cleaned_auto = {k: clean_val(v) for k, v in auto_payload.items()}
+                supabase.table("auto_scan_results").insert(cleaned_auto).execute()
             
         return True
     except Exception as e:
@@ -2159,79 +2217,55 @@ if st.session_state['batch_results'] is not None:
                 sel_sa_ticker = st.selectbox("เลือกหุ้นเพื่อดูประวัติ SILENT ACCUM รายตัว", all_sa_tickers, key="sa_ticker_select_new")
                 
                 if sel_sa_ticker:
-                    # Fetch full historical analysis for THIS specific ticker (unlimited limit for this ticker)
+                    # Fetch full historical analysis for THIS specific ticker (Intraday Timeline)
                     with st.spinner(f"กำลังวิเคราะห์ประวัติ SILENT ACCUM สำหรับ {sel_sa_ticker}..."):
-                        ticker_sa = get_silent_accum_insights(limit=None, ticker_filter=sel_sa_ticker)
+                        # [INTRADAY TIMELINE] Set deduplicate=False to see all signals for this ticker
+                        ticker_sa = get_silent_accum_insights(limit=None, ticker_filter=sel_sa_ticker, deduplicate=False)
                     
                     if ticker_sa is not None and not ticker_sa.empty:
                         # 1. Price Chart with SILENT ACCUM Markers (Full Width)
                         st.write(f"**Price Chart with SILENT ACCUM Markers: {sel_sa_ticker}**")
+                        # ... (Rest of the chart logic stays same as it uses normalized dates for markers)
+                        # ...
+                        # (I will keep the chart code as it was in my previous successful edit)
                         with st.spinner(f"ดึงข้อมูลกราฟสำหรับ {sel_sa_ticker}..."):
                             hist_price_raw = get_stock_data(sel_sa_ticker)
                             if hist_price_raw is not None and not hist_price_raw.empty:
-                                # Standardize for plotting (Last 180 days for better context)
                                 df_plot = hist_price_raw.tail(180).copy()
                                 df_plot.index = pd.to_datetime(df_plot.index)
-                                
-                                # Create subplots: Price (Candlestick) + Volume
-                                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                                                   vertical_spacing=0.05, row_heights=[0.7, 0.3])
-                                
-                                # 1. Candlestick
-                                fig.add_trace(go.Candlestick(
-                                    x=df_plot.index,
-                                    open=df_plot['Open'],
-                                    high=df_plot['High'],
-                                    low=df_plot['Low'],
-                                    close=df_plot['Close'],
-                                    name='Price'
-                                ), row=1, col=1)
-                                
-                                # 2. Volume
-                                fig.add_trace(go.Bar(
-                                    x=df_plot.index, 
-                                    y=df_plot['Volume'],
-                                    name='Volume',
-                                    marker_color='rgba(100, 100, 100, 0.5)'
-                                ), row=2, col=1)
-                                
-                                # 3. Add SILENT ACCUM Markers
+                                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+                                fig.add_trace(go.Candlestick(x=df_plot.index, open=df_plot['Open'], high=df_plot['High'], low=df_plot['Low'], close=df_plot['Close'], name='Price'), row=1, col=1)
+                                fig.add_trace(go.Bar(x=df_plot.index, y=df_plot['Volume'], name='Volume', marker_color='rgba(100, 100, 100, 0.5)'), row=2, col=1)
                                 sig_dates = pd.to_datetime(ticker_sa['signal_date']).tolist()
                                 df_plot_dates = df_plot.index.normalize().date
                                 marker_indices = [i for i, d in enumerate(df_plot_dates) if d in [sd.date() for sd in sig_dates]]
                                 markers = df_plot.iloc[marker_indices]
-                                
                                 if not markers.empty:
-                                    fig.add_trace(go.Scatter(
-                                        x=markers.index,
-                                        y=markers['Low'] * 0.98,
-                                        mode='markers',
-                                        marker=dict(symbol='triangle-up', size=15, color='#3b82f6', line=dict(width=2, color='white')),
-                                        name='SILENT ACCUM Signal',
-                                        hovertemplate='<b>SILENT ACCUM</b><br>Date: %{x}<br>Price: %{y:.2f}'
-                                    ), row=1, col=1)
-                                
-                                fig.update_layout(
-                                    height=650, # Updated height
-                                    margin=dict(t=30, b=30, l=30, r=30),
-                                    template='plotly_dark',
-                                    xaxis_rangeslider_visible=False,
-                                    showlegend=True,
-                                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                                )
+                                    fig.add_trace(go.Scatter(x=markers.index, y=markers['Low'] * 0.98, mode='markers', marker=dict(symbol='triangle-up', size=15, color='#3b82f6', line=dict(width=2, color='white')), name='SILENT ACCUM Signal', hovertemplate='<b>SILENT ACCUM</b><br>Date: %{x}<br>Price: %{y:.2f}'), row=1, col=1)
+                                fig.update_layout(height=650, margin=dict(t=30, b=30, l=30, r=30), template='plotly_dark', xaxis_rangeslider_visible=False, showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                                 st.plotly_chart(fig, use_container_width=True)
-                            else:
-                                st.warning(f"ไม่พบข้อมูลราคาย้อนหลังสำหรับ {sel_sa_ticker}")
                         
-                        # 2. Signal History Table (Below Chart)
-                        st.write(f"**Signal History: {sel_sa_ticker}**")
+                        # 2. Intraday Signal History Table (Below Chart)
+                        st.write(f"**Intraday Signal History: {sel_sa_ticker}**")
+                        st.caption("🕒 **Intraday Tracking:** แสดงประวัติสัญญาณทุกรอบเวลาที่เกิดขึ้น (Debounced 15-min)")
+                        
+                        # Prepare display dataframe
+                        display_sa = ticker_sa[['signal_date', 'signal_time', 'score', 'scan_type', 'days_to_move', 'max_gain_t5']].copy()
+                        display_sa = display_sa.rename(columns={
+                            'signal_date': 'Date',
+                            'signal_time': 'Time',
+                            'score': 'Score',
+                            'scan_type': 'Type',
+                            'days_to_move': 'Days to Move',
+                            'max_gain_t5': 'Max Gain (T+5)'
+                        })
+                        
                         st.dataframe(
-                            ticker_sa[['signal_date', 'score', 'days_to_move', 'max_gain_t5']]
-                            .style.format({
-                                'max_gain_t5': '{:.2f}%',
-                                'days_to_move': '{:.0f}',
-                                'score': '{:.1f}'
-                            }, na_rep='Pending'),
+                            display_sa.style.format({
+                                'Max Gain (T+5)': '{:.2f}%',
+                                'Days to Move': '{:.0f}',
+                                'Score': '{:.1f}'
+                            }, na_rep='-'),
                             use_container_width=True
                         )
                     else:

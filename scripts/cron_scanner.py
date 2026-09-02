@@ -134,6 +134,21 @@ def scan_single_ticker(ticker, scanned_at):
         print(f"❌ Error scanning {ticker}: {e}")
     return None
 
+def check_recent_signal_exists(ticker, signal_type, window_minutes=15):
+    """Check if a signal for this ticker has been recorded in the last X minutes."""
+    if not supabase: return False
+    try:
+        now_utc = datetime.now(pytz.utc)
+        threshold = (now_utc - timedelta(minutes=window_minutes)).isoformat()
+        res = supabase.table("auto_scan_results") \
+            .select("id") \
+            .eq("ticker", ticker) \
+            .eq("signal", signal_type) \
+            .gte("scanned_at", threshold) \
+            .limit(1).execute()
+        return len(res.data) > 0
+    except: return False
+
 def run_scanner():
     print(f"--- 🚀 Auto Market Scanner Started at {datetime.now(SET_TZ)} ---")
     
@@ -172,6 +187,12 @@ def run_scanner():
     final_payloads = []
     for _, row in df_results.iterrows():
         ticker = row['ticker']
+        
+        # [DEBOUNCE CHECK] If SILENT ACCUM, check if recently recorded
+        if row['is_silent_accum'] and check_recent_signal_exists(ticker, 'SILENT ACCUM', window_minutes=15):
+            print(f"   ⏩ Skipping {ticker} (SILENT ACCUM already recorded in last 15m)")
+            continue
+
         s_avg = sector_avgs.get(row['sector'], 0)
         srs_val = row['change_percent'] - s_avg
         
@@ -199,14 +220,15 @@ def run_scanner():
             'rsi': float(row['rsi']),
             'is_recovery': bool(row['is_recovery']),
             'is_pinbar': bool(row['is_pinbar']),
-            'is_silent_accum': bool(row['is_silent_accum'])
+            'is_silent_accum': bool(row['is_silent_accum']),
+            'scan_type': 'AUTO_SCAN'
         }
         
         # [STRICT DB SCHEMA FILTERING]
         allowed_keys = [
             'ticker', 'scanned_at', 'score', 'signal', 'strategy', 'sector',
             'close_price', 'change_percent', 'volume', 'rsi', 'is_recovery',
-            'is_pinbar', 'is_silent_accum'
+            'is_pinbar', 'is_silent_accum', 'scan_type'
         ]
         
         filtered_payload = {k: payload.get(k) for k in allowed_keys}
