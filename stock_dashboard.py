@@ -115,7 +115,7 @@ def init_log_db():
 def get_silent_accum_insights(limit=100, ticker_filter=None, deduplicate=True):
     """
     Analyze historical SILENT ACCUM signals from both manual and auto scan results.
-    Optimized to fetch price data in bulk per unique ticker.
+    Strictly follows First-Signal-Wins logic per ticker per day.
     """
     if not supabase:
         return None
@@ -143,12 +143,13 @@ def get_silent_accum_insights(limit=100, ticker_filter=None, deduplicate=True):
         
         if res1.data:
             df1 = pd.DataFrame(res1.data)
+            # Standardize for Concatenation
             df1['source'] = 'manual'
             df1['scan_type'] = 'MANUAL_SCAN'
-            # Standardize timestamp for historical snapshot sorting (Bangkok time)
+            # Normalize timestamp to Asia/Bangkok
             df1['full_timestamp'] = pd.to_datetime(df1['scan_date'].astype(str) + ' ' + df1['scan_time'].fillna('00:00:00').astype(str))
             df1['full_timestamp'] = df1['full_timestamp'].dt.tz_localize(None)
-            df1 = df1.rename(columns={'scan_date': 'signal_date', 'signal_type': 'signal', 'bull_score': 'score', 'scan_time': 'signal_time'})
+            df1 = df1.rename(columns={'scan_date': 'signal_date_raw', 'signal_type': 'signal', 'bull_score': 'score', 'scan_time': 'signal_time'})
             df1['signal_date'] = df1['full_timestamp'].dt.date
         
         # 2. Fetch from auto_scan_results (Auto)
@@ -165,9 +166,11 @@ def get_silent_accum_insights(limit=100, ticker_filter=None, deduplicate=True):
         if res2.data:
             df2 = pd.DataFrame(res2.data)
             if not df2.empty:
+                # Extra safety filter
                 df2 = df2[df2['signal'].fillna('').str.upper() == 'SILENT ACCUM'].copy()
                 if not df2.empty:
                     df2['source'] = 'auto'
+                    # Normalize timestamp to Asia/Bangkok
                     df2['full_timestamp'] = pd.to_datetime(df2['scanned_at'], utc=True).dt.tz_convert(SET_TZ).dt.tz_localize(None)
                     df2['signal_date'] = df2['full_timestamp'].dt.date
                     df2['signal_time'] = df2['full_timestamp'].dt.strftime('%H:%M:%S')
@@ -175,107 +178,100 @@ def get_silent_accum_insights(limit=100, ticker_filter=None, deduplicate=True):
                     if 'scan_type' not in df2.columns:
                         df2['scan_type'] = 'AUTO_SCAN'
         
-        # Combine
+        # 3. Correct Union & Deduplication Logic
         combined = pd.concat([df1, df2], ignore_index=True)
         if combined.empty:
             return None
             
-        # Standardize and Sort
+        # Ensure data types are consistent for deduplication
+        combined['ticker'] = combined['ticker'].astype(str).str.strip().str.upper()
         combined['full_timestamp'] = pd.to_datetime(combined['full_timestamp'], errors='coerce')
+        combined['signal_date'] = pd.to_datetime(combined['signal_date']).dt.date
         
         if deduplicate:
-            # [STRICT IMMUTABLE LOG] Deduplicate: First Signal Wins
-            # Sort by timestamp ASCENDING and keep first to preserve the earliest signal of each day
+            # [STRICT IMMUTABLE LOG] Sort by timestamp ASCENDING and keep FIRST of day per ticker
             combined = combined.sort_values(by='full_timestamp', ascending=True)
             combined = combined.drop_duplicates(subset=['ticker', 'signal_date'], keep='first')
         
-        # Final Sort for Display: Latest signals at the top
+        # 4. Sorting Final Output for Display
         combined = combined.sort_values(by=['signal_date', 'full_timestamp'], ascending=[False, False])
         
-        if limit and not ticker_filter: # Apply limit only for overview, not for single ticker
+        # Apply row limit only for overview mode
+        if limit and not ticker_filter:
             signals = combined.head(limit)
         else:
             signals = combined
             
-        # Group by ticker to fetch price data once per ticker
+        # 5. Performance Calculation Loop
         unique_tickers = signals['ticker'].unique()
         ticker_data_cache = {}
         
         results = []
         for _, sig in signals.iterrows():
             ticker = sig['ticker']
-            signal_date = pd.to_datetime(sig['signal_date'])
+            signal_date = pd.to_datetime(sig['signal_date']).date()
             entry_price = sig['price']
             
-            # Use cached price data if available
+            # Fetch stock data (cached per ticker)
             if ticker not in ticker_data_cache:
                 ticker_data_cache[ticker] = get_stock_data(ticker)
                 
             df = ticker_data_cache[ticker]
             
+            # Initialize default result row
+            res_row = {
+                'ticker': ticker,
+                'signal_date': sig['signal_date'],
+                'signal_time': sig.get('signal_time', '00:00:00'),
+                'scan_type': sig.get('scan_type', 'N/A'),
+                'full_timestamp': sig['full_timestamp'],
+                'score': sig['score'],
+                'days_to_move': None,
+                'max_gain_t5': None,
+                'win_t5': 0
+            }
+            
             if df is not None and not df.empty:
-                df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
-                signal_date_norm = signal_date.tz_localize(None).normalize()
+                # Normalize index for date comparison
+                df_norm = df.copy()
+                df_norm.index = pd.to_datetime(df_norm.index).tz_localize(None).normalize().date
                 
-                future_df = df[df.index >= signal_date_norm].copy()
+                # Get future price data starting from signal date
+                future_df = df_norm[df_norm.index >= signal_date].copy()
+                
                 if len(future_df) > 1:
-                    test_df = future_df.iloc[1:11]
+                    # test_df starts from T+1
+                    test_df = future_df.iloc[1:11] # Up to T+10
+                    
+                    # 1. Calculate Days to Move (+1% Upside)
                     found_move = False
                     for day_idx, (idx, row) in enumerate(test_df.iterrows()):
                         max_ret = (row['High'] / entry_price - 1) * 100
                         if max_ret >= 1.0:
-                            results.append({
-                                'ticker': ticker,
-                                'signal_date': sig['signal_date'],
-                                'signal_time': sig.get('signal_time', '00:00:00'),
-                                'scan_type': sig.get('scan_type', 'N/A'),
-                                'full_timestamp': sig['full_timestamp'],
-                                'score': sig['score'],
-                                'days_to_move': day_idx + 1,
-                                'max_gain_t5': (test_df.iloc[:5]['High'].max() / entry_price - 1) * 100 if len(test_df) >= 5 else None,
-                                'win_t5': 1 if (len(test_df) >= 5 and (test_df.iloc[:5]['High'].max() / entry_price - 1) * 100 >= 1.0) else 0
-                            })
+                            res_row['days_to_move'] = day_idx + 1
                             found_move = True
                             break
                     
-                    if not found_move and len(test_df) >= 5:
-                        results.append({
-                            'ticker': ticker,
-                            'signal_date': sig['signal_date'],
-                            'signal_time': sig.get('signal_time', '00:00:00'),
-                            'scan_type': sig.get('scan_type', 'N/A'),
-                            'full_timestamp': sig['full_timestamp'],
-                            'score': sig['score'],
-                            'days_to_move': None,
-                            'max_gain_t5': (test_df.iloc[:5]['High'].max() / entry_price - 1) * 100,
-                            'win_t5': 1 if (test_df.iloc[:5]['High'].max() / entry_price - 1) * 100 >= 1.0 else 0
-                        })
-                else:
-                    results.append({
-                        'ticker': ticker,
-                        'signal_date': sig['signal_date'],
-                        'signal_time': sig.get('signal_time', '00:00:00'),
-                        'scan_type': sig.get('scan_type', 'N/A'),
-                        'full_timestamp': sig['full_timestamp'],
-                        'score': sig['score'],
-                        'days_to_move': None,
-                        'max_gain_t5': None,
-                        'win_t5': 0
-                    })
-            else:
-                results.append({
-                    'ticker': ticker,
-                    'signal_date': sig['signal_date'],
-                    'signal_time': sig.get('signal_time', '00:00:00'),
-                    'scan_type': sig.get('scan_type', 'N/A'),
-                    'full_timestamp': sig['full_timestamp'],
-                    'score': sig['score'],
-                    'days_to_move': None,
-                    'max_gain_t5': None,
-                    'win_t5': 0
-                })
+                    # 2. Calculate Max Gain and Win within T+5
+                    if len(test_df) > 0:
+                        t5_window = test_df.head(5)
+                        max_gain = (t5_window['High'].max() / entry_price - 1) * 100
+                        res_row['max_gain_t5'] = max_gain
+                        res_row['win_t5'] = 1 if max_gain >= 1.0 else 0
+            
+            results.append(res_row)
         
-        return pd.DataFrame(results)
+        final_df = pd.DataFrame(results)
+        if not final_df.empty:
+            final_df = final_df.sort_values(by=['signal_date', 'full_timestamp'], ascending=[False, False])
+            final_df = final_df.reset_index(drop=True)
+            
+        return final_df
+    except Exception as e:
+        st.error(f"Error in SILENT ACCUM analysis: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return None
     except Exception as e:
         st.error(f"Error in SILENT ACCUM analysis: {e}")
         return None
