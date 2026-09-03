@@ -192,7 +192,7 @@ def get_silent_accum_insights(limit=100, ticker_filter=None, deduplicate=True):
         # Final Sort for Display: Latest signals at the top
         combined = combined.sort_values(by=['signal_date', 'full_timestamp'], ascending=[False, False])
         
-        if limit:
+        if limit and not ticker_filter: # Apply limit only for overview, not for single ticker
             signals = combined.head(limit)
         else:
             signals = combined
@@ -2159,7 +2159,11 @@ if st.session_state['batch_results'] is not None:
         with main_tabs[4]: # SILENT ACCUM Insight
             st.info("💎 เจาะลึกพฤติกรรมหุ้น SILENT ACCUM: วัดระยะเวลาการฟื้นตัวและโอกาสชนะ")
             st.caption("📈 **Feature Insight:** วิเคราะห์สถิติย้อนหลังของสัญญาณ SILENT ACCUM เพื่อหาค่าเฉลี่ยจำนวนวันที่ราคามักจะ 'ระเบิด' (Days to Move) และอัตราการชนะ (Win Rate) ภายใน 5 วัน")
-            sa_data = get_silent_accum_insights(limit=100)
+            
+            # 0. Display Control
+            row_limit = st.slider("จำนวนรายการที่แสดงผลล่าสุด", min_value=10, max_value=200, value=30, step=10, key="sa_row_limit")
+            
+            sa_data = get_silent_accum_insights(limit=row_limit)
             
             if sa_data is not None and not sa_data.empty:
                 # 1. Overview Metrics
@@ -2192,10 +2196,9 @@ if st.session_state['batch_results'] is not None:
                 st.plotly_chart(fig_sa, use_container_width=True)
                 
                 # 3. Recent Cases
-                st.write("### 📜 Recent SILENT ACCUM Cases")
+                st.write(f"### 📜 Recent SILENT ACCUM Cases (Top {row_limit})")
                 st.dataframe(
                     sa_data[['ticker', 'signal_date', 'score', 'days_to_move', 'max_gain_t5']]
-                    .head(20)
                     .style.format({
                         'max_gain_t5': '{:.2f}%',
                         'days_to_move': '{:.0f}',
