@@ -795,8 +795,9 @@ def fetch_ticker_combined_history(ticker, days=90):
         # Sort and deduplicate by date and signal type
         # We keep one record per ticker-date-signal combination to allow multi-signal overlay
         combined['date_only'] = combined['scanned_at'].dt.date
-        combined = combined.sort_values('scanned_at')
-        combined = combined.drop_duplicates(subset=['date_only', 'signal'], keep='last')
+        combined = combined.sort_values('scanned_at', ascending=True)
+        # Use keep='first' as per "First Signal Wins" logic for intraday signals
+        combined = combined.drop_duplicates(subset=['date_only', 'signal'], keep='first')
         
         return combined.drop(columns=['date_only'])
     except Exception as e:
@@ -1073,53 +1074,92 @@ def get_stock_info(ticker):
 @st.cache_data(ttl=3600)
 def get_stock_data(ticker):
     """
-    Fetch historical stock data with robust fallback mechanism.
-    Tries yahooquery first, then yfinance if it fails.
+    Fetch historical stock data with robust isolation and fallback.
+    Ensures the data returned is strictly for the requested ticker and has a clean Date index.
     """
     if not ticker:
         return None
         
     # Clean ticker: Strip spaces, ensure .BK suffix for Thai stocks if missing
-    ticker = ticker.strip().upper()
-    if not ticker.endswith('.BK') and not ticker.startswith('^'):
-        ticker = f"{ticker}.BK"
+    clean_ticker = ticker.strip().upper()
+    if not clean_ticker.endswith('.BK') and not clean_ticker.startswith('^'):
+        clean_ticker = f"{clean_ticker}.BK"
         
     try:
-        # 1. Try YahooQuery (often faster and handles symbols better)
+        # 1. Try YahooQuery with strict symbol filtering
         session = requests.Session()
         session.headers.update({'User-Agent': 'Mozilla/5.0'})
-        t = yq.Ticker(ticker, session=session)
+        t = yq.Ticker(clean_ticker, session=session)
         df = t.history(start="2018-01-01")
         
         if df is not None and not df.empty:
+            # Handle YahooQuery's MultiIndex or SingleIndex return
             if isinstance(df.index, pd.MultiIndex):
                 df = df.reset_index()
             else:
                 df = df.reset_index()
                 
-            if "symbol" in df.columns: 
-                df = df[df["symbol"] == ticker]
+            # STRICT FILTERING: Ensure we only have the requested ticker's data
+            # YahooQuery sometimes returns other symbols if passed a list or via internal mapping
+            if "symbol" in df.columns:
+                df = df[df["symbol"] == clean_ticker].copy()
             
             if not df.empty:
-                df['date'] = pd.to_datetime(df['date'])
-                df = df.set_index("date")[["close", "volume", "open", "high", "low"]].rename(
-                    columns={"close": "Close", "volume": "Volume", "open": "Open", "high": "High", "low": "Low"}
-                )
-                return df
+                # Standardize columns and index
+                # YahooQuery uses lowercase column names: [date, symbol, close, volume, open, high, low, ...]
+                col_map = {
+                    "close": "Close", 
+                    "volume": "Volume", 
+                    "open": "Open", 
+                    "high": "High", 
+                    "low": "Low"
+                }
+                
+                # Verify required columns exist
+                available_cols = [c for c in col_map.keys() if c in df.columns]
+                if "date" in df.columns and len(available_cols) >= 3:
+                    df['date'] = pd.to_datetime(df['date'])
+                    df = df.set_index("date")
+                    df = df[available_cols].rename(columns=col_map)
+                    
+                    # Sort and drop duplicates in index
+                    df = df.sort_index()
+                    df = df[~df.index.duplicated(keep='last')]
+                    
+                    # Ensure index is Naive Bangkok Time
+                    if df.index.tz is not None:
+                        df.index = df.index.tz_convert(SET_TZ).tz_localize(None)
+                    else:
+                        df.index = df.index.tz_localize(None)
+                        
+                    return df
 
-        # 2. Fallback to yfinance if YahooQuery fails
-        print(f"⚠️ YahooQuery failed for {ticker}, falling back to yfinance...")
-        yf_ticker = yf.Ticker(ticker)
-        df_yf = yf_ticker.history(period="2y") # Get 2 years for context
+        # 2. Fallback to yfinance if YahooQuery fails or returns invalid data
+        print(f"⚠️ YahooQuery fallback for {clean_ticker}...")
+        yf_ticker = yf.Ticker(clean_ticker)
+        # Fetch longer period to ensure we have enough data for indicators
+        df_yf = yf_ticker.history(period="max") 
         
         if df_yf is not None and not df_yf.empty:
-            # Ensure standard OHLCV column names
-            df_yf = df_yf[["Close", "Volume", "Open", "High", "Low"]]
-            # Ensure index is naive datetime (to match our convention)
+            # Ensure standard OHLCV column names and drop extra columns like Dividends
+            needed = ["Open", "High", "Low", "Close", "Volume"]
+            df_yf = df_yf[[c for c in needed if c in df_yf.columns]].copy()
+            
+            # Sort and deduplicate
+            df_yf = df_yf.sort_index()
+            df_yf = df_yf[~df_yf.index.duplicated(keep='last')]
+            
+            # Ensure index is naive datetime
             if df_yf.index.tz is not None:
                 df_yf.index = df_yf.index.tz_convert(SET_TZ).tz_localize(None)
+            else:
+                df_yf.index = df_yf.index.tz_localize(None)
+                
             return df_yf
             
+        return None
+    except Exception as e:
+        print(f"Critical Error fetching {clean_ticker}: {e}")
         return None
     except Exception as e:
         print(f"❌ Critical error fetching data for {ticker}: {e}")
@@ -2458,23 +2498,24 @@ if st.session_state['batch_results'] is not None:
                         # Fetch price data
                         hist_price_raw = get_stock_data(sel_hist_ticker)
                         if hist_price_raw is not None:
-                            # Calculate indicators and get tail
+                            # 1. Prepare Price Data
                             hist_price = calculate_quant_indicators(hist_price_raw, 14, 10, 50)
-                            hist_price = hist_price.tail(90)
+                            hist_price = hist_price.tail(90).copy()
+                            # Convert index to string 'YYYY-MM-DD' for exact matching
+                            hist_price['date_str'] = hist_price.index.strftime('%Y-%m-%d')
                             
-                            # Fetch signals from Supabase (Combined)
+                            # 2. Fetch & Prepare Signal Data
                             hist_signals = fetch_ticker_combined_history(sel_hist_ticker, days=90)
                             
-                            # --- 1. Multi-Signal Processing & Dynamic Selection ---
                             if not hist_signals.empty:
-                                # Pre-process signals for display
-                                hist_signals['date_only'] = pd.to_datetime(hist_signals['scanned_at']).dt.date
+                                # Standardize signal dates to 'YYYY-MM-DD' strings
+                                hist_signals['signal_date_str'] = pd.to_datetime(hist_signals['scanned_at']).dt.strftime('%Y-%m-%d')
                                 
                                 # Unify Signal Naming for Mapping
                                 def clean_signal_name(row):
                                     sig = str(row.get('signal', '')).upper()
                                     strat = str(row.get('strategy', '')).upper()
-                                    is_silent = row.get('is_silent_accum', False)
+                                    is_silent = bool(row.get('is_silent_accum', False))
                                     
                                     if 'SILENT' in sig or 'SILENT' in strat or is_silent: return 'SILENT ACCUM'
                                     if 'BUY' in sig or 'BREAKOUT' in sig: return 'BUY / BREAKOUT'
@@ -2493,16 +2534,18 @@ if st.session_state['batch_results'] is not None:
                                     key="hist_sig_multiselect"
                                 )
                                 
-                                filtered_signals = hist_signals[hist_signals['display_signal'].isin(selected_display_signals)]
+                                # Filter signals by selected types
+                                filtered_signals = hist_signals[hist_signals['display_signal'].isin(selected_display_signals)].copy()
                             else:
                                 filtered_signals = pd.DataFrame()
-                            
+                                selected_display_signals = []
+
                             # Create Plotly Chart
                             fig_hist = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
                             
-                            # 1. Candlestick
+                            # 1. Candlestick (Use date_str as X-axis for stability)
                             fig_hist.add_trace(go.Candlestick(
-                                x=hist_price.index,
+                                x=hist_price['date_str'],
                                 open=hist_price['Open'],
                                 high=hist_price['High'],
                                 low=hist_price['Low'],
@@ -2510,7 +2553,7 @@ if st.session_state['batch_results'] is not None:
                                 name="Price"
                             ), row=1, col=1)
                             
-                            # 2. Add Multi-Signal Markers (Overlay)
+                            # 2. Add Multi-Signal Markers (Overlay using Exact Date Matching)
                             SIGNAL_STYLE = {
                                 'SILENT ACCUM': {'symbol': 'circle', 'color': '#3b82f6', 'size': 12, 'label': '🔵 SILENT ACCUM'},
                                 'BUY / BREAKOUT': {'symbol': 'triangle-up', 'color': '#10b981', 'size': 15, 'label': '🟢 BUY / BREAKOUT'},
@@ -2520,40 +2563,42 @@ if st.session_state['batch_results'] is not None:
                             }
 
                             if not filtered_signals.empty:
-                                # Group by display signal to add traces correctly to legend
-                                for sig_name in selected_display_signals:
-                                    sig_type_df = filtered_signals[filtered_signals['display_signal'] == sig_name]
-                                    if sig_type_df.empty: continue
-                                    
-                                    style = SIGNAL_STYLE.get(sig_name, SIGNAL_STYLE['OTHER'])
-                                    
-                                    # Match dates with price index to get Y-position
-                                    plot_x = []
-                                    plot_y = []
-                                    hover_texts = []
-                                    
-                                    for _, s_row in sig_type_df.iterrows():
-                                        s_date = s_row['date_only']
-                                        # Find price for this date (Naive Date comparison)
-                                        price_match = hist_price[hist_price.index.date == s_date]
-                                        if not price_match.empty:
-                                            p_row = price_match.iloc[0]
-                                            plot_x.append(price_match.index[0])
-                                            
-                                            # Position based on signal type
+                                # STRICT EXACT DATE MERGE: Join signals with price data on date string
+                                # This ensures markers only appear on valid trading days and correct candles
+                                df_markers = hist_price.merge(
+                                    filtered_signals, 
+                                    left_on='date_str', 
+                                    right_on='signal_date_str', 
+                                    how='inner'
+                                )
+                                
+                                if not df_markers.empty:
+                                    # Plot each group to have individual legend items
+                                    for sig_name in selected_display_signals:
+                                        sig_group = df_markers[df_markers['display_signal'] == sig_name]
+                                        if sig_group.empty: continue
+                                        
+                                        style = SIGNAL_STYLE.get(sig_name, SIGNAL_STYLE['OTHER'])
+                                        
+                                        # Determine Y-position based on OHLC
+                                        y_pos = []
+                                        for _, m_row in sig_group.iterrows():
                                             if sig_name == 'OTHER':
-                                                plot_y.append(p_row['High'] * 1.02)
+                                                y_pos.append(m_row['High'] * 1.02)
                                             else:
-                                                plot_y.append(p_row['Low'] * 0.98)
-                                            
-                                            h_rsi = f"RSI: {s_row.get('rsi', 0):.1f}" if pd.notna(s_row.get('rsi')) else ""
-                                            h_vol = f"Vol: {s_row.get('volume', 0):,.0f}" if pd.notna(s_row.get('volume')) else ""
-                                            score = s_row.get('score', 'N/A')
+                                                y_pos.append(m_row['Low'] * 0.98)
+                                        
+                                        # Hover texts
+                                        hover_texts = []
+                                        for _, m_row in sig_group.iterrows():
+                                            h_rsi = f"RSI: {m_row.get('rsi', 0):.1f}" if pd.notna(m_row.get('rsi')) else ""
+                                            h_vol = f"Vol: {m_row.get('volume', 0):,.0f}" if pd.notna(m_row.get('volume')) else ""
+                                            score = m_row.get('score', 'N/A')
                                             hover_texts.append(f"<b>{sig_name}</b><br>Score: {score}<br>{h_rsi}<br>{h_vol}")
 
-                                    if plot_x:
                                         fig_hist.add_trace(go.Scatter(
-                                            x=plot_x, y=plot_y,
+                                            x=sig_group['date_str'], 
+                                            y=y_pos,
                                             mode='markers',
                                             marker=dict(
                                                 symbol=style['symbol'], 
@@ -2567,9 +2612,9 @@ if st.session_state['batch_results'] is not None:
                                             showlegend=True
                                         ), row=1, col=1)
                             
-                            # 3. RSI Subplot
+                            # 3. RSI Subplot (Use date_str for X alignment)
                             fig_hist.add_trace(go.Scatter(
-                                x=hist_price.index, y=hist_price['RSI'],
+                                x=hist_price['date_str'], y=hist_price['RSI'],
                                 name="RSI", line=dict(color='#8b5cf6', width=2)
                             ), row=2, col=1)
                             
