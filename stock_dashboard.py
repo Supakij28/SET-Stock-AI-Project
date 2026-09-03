@@ -792,10 +792,11 @@ def fetch_ticker_combined_history(ticker, days=90):
         if combined.empty:
             return pd.DataFrame()
             
-        # Sort and deduplicate by date (keep last entry for each day)
+        # Sort and deduplicate by date and signal type
+        # We keep one record per ticker-date-signal combination to allow multi-signal overlay
         combined['date_only'] = combined['scanned_at'].dt.date
         combined = combined.sort_values('scanned_at')
-        combined = combined.drop_duplicates(subset=['date_only'], keep='last')
+        combined = combined.drop_duplicates(subset=['date_only', 'signal'], keep='last')
         
         return combined.drop(columns=['date_only'])
     except Exception as e:
@@ -2464,50 +2465,38 @@ if st.session_state['batch_results'] is not None:
                             # Fetch signals from Supabase (Combined)
                             hist_signals = fetch_ticker_combined_history(sel_hist_ticker, days=90)
                             
-                            # --- 1. Map Signals to Price Data (Robust Way) ---
-                            # Ensure fresh copy to avoid SettingWithCopy and strict dtype issues in new Pandas versions
-                            hist_price = hist_price.copy()
-                            
-                            # Initialize columns using assign for cleaner setup
-                            hist_price = hist_price.assign(
-                                signal=None,
-                                score=None,
-                                is_silent=False,
-                                strategy_val='',
-                                rsi_val=None,
-                                vol_val=None
-                            )
-                            
+                            # --- 1. Multi-Signal Processing & Dynamic Selection ---
                             if not hist_signals.empty:
+                                # Pre-process signals for display
                                 hist_signals['date_only'] = pd.to_datetime(hist_signals['scanned_at']).dt.date
-                                for _, sig_row in hist_signals.iterrows():
-                                    sig_date = sig_row['date_only']
-                                    mask = hist_price.index.date == sig_date
-                                    if mask.any():
-                                        idx = hist_price.index[mask][0]
-                                        # Use .loc for safer assignment in strict environments
-                                        hist_price.loc[idx, 'signal'] = sig_row.get('signal')
-                                        hist_price.loc[idx, 'score'] = sig_row.get('score')
-                                        hist_price.loc[idx, 'strategy_val'] = sig_row.get('strategy', '')
-                                        # Force boolean safely, handling NaN correctly
-                                        is_silent_accum_val = sig_row.get('is_silent_accum')
-                                        if pd.isna(is_silent_accum_val):
-                                            is_silent_accum_val = False
-                                        
-                                        signal_val = sig_row.get('signal', '')
-                                        strategy_val = sig_row.get('strategy', '')
-                                        if pd.isna(signal_val): signal_val = ''
-                                        if pd.isna(strategy_val): strategy_val = ''
-                                           
-                                        # Only mark as SILENT if it's a primary signal or explicitly flagged with a decent score
-                                        is_silent_val = (signal_val == 'SILENT ACCUM') or \
-                                                       (bool(is_silent_accum_val) and sig_row.get('score', 0) > 60) or \
-                                                       (strategy_val == 'SILENT ACCUM')
-                                        
-                                        hist_price.loc[idx, 'is_silent'] = is_silent_val
-                                        hist_price.loc[idx, 'rsi_val'] = sig_row.get('rsi')
-                                        hist_price.loc[idx, 'vol_val'] = sig_row.get('volume')
+                                
+                                # Unify Signal Naming for Mapping
+                                def clean_signal_name(row):
+                                    sig = str(row.get('signal', '')).upper()
+                                    strat = str(row.get('strategy', '')).upper()
+                                    is_silent = row.get('is_silent_accum', False)
+                                    
+                                    if 'SILENT' in sig or 'SILENT' in strat or is_silent: return 'SILENT ACCUM'
+                                    if 'BUY' in sig or 'BREAKOUT' in sig: return 'BUY / BREAKOUT'
+                                    if 'PULLBACK' in sig or 'RETEST' in sig or 'PIN BAR' in sig: return 'PULLBACK / PIN BAR'
+                                    if 'MOMENTUM' in sig or 'VOLUME' in sig or 'RECOVERY' in sig: return 'MOMENTUM / VOL'
+                                    return 'OTHER'
 
+                                hist_signals['display_signal'] = hist_signals.apply(clean_signal_name, axis=1)
+                                
+                                # Dynamic Signal Selection Controls
+                                available_signals = sorted(hist_signals['display_signal'].unique().tolist())
+                                selected_display_signals = st.multiselect(
+                                    "🎯 เลือกประเภทสัญญาณที่ต้องการแสดง (Multi-Signal Overlay)", 
+                                    available_signals, 
+                                    default=available_signals,
+                                    key="hist_sig_multiselect"
+                                )
+                                
+                                filtered_signals = hist_signals[hist_signals['display_signal'].isin(selected_display_signals)]
+                            else:
+                                filtered_signals = pd.DataFrame()
+                            
                             # Create Plotly Chart
                             fig_hist = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
                             
@@ -2521,47 +2510,62 @@ if st.session_state['batch_results'] is not None:
                                 name="Price"
                             ), row=1, col=1)
                             
-                            # 2. Add Signal Markers
-                            for p_idx, row in hist_price.iterrows():
-                                sig_type = row['signal']
-                                is_silent = row['is_silent']
-                                if not sig_type and not is_silent:
-                                    continue
-                                    
-                                p_low = row['Low']
-                                h_rsi = f"RSI: {row['rsi_val']:.1f}" if not pd.isna(row['rsi_val']) else ""
-                                h_vol = f"Vol: {row['vol_val']:,.0f}" if not pd.isna(row['vol_val']) else ""
-                                h_info = f"<br>{h_rsi}<br>{h_vol}" if h_rsi or h_vol else ""
-                                score_val = row['score'] if not pd.isna(row['score']) else "N/A"
+                            # 2. Add Multi-Signal Markers (Overlay)
+                            SIGNAL_STYLE = {
+                                'SILENT ACCUM': {'symbol': 'circle', 'color': '#3b82f6', 'size': 12, 'label': '🔵 SILENT ACCUM'},
+                                'BUY / BREAKOUT': {'symbol': 'triangle-up', 'color': '#10b981', 'size': 15, 'label': '🟢 BUY / BREAKOUT'},
+                                'PULLBACK / PIN BAR': {'symbol': 'diamond', 'color': '#f59e0b', 'size': 12, 'label': '🟡 PULLBACK / PIN BAR'},
+                                'MOMENTUM / VOL': {'symbol': 'square', 'color': '#a855f7', 'size': 12, 'label': '🟣 MOMENTUM / VOL'},
+                                'OTHER': {'symbol': 'triangle-down', 'color': '#ef4444', 'size': 10, 'label': '🔴 OTHER'}
+                            }
 
-                                if is_silent:
-                                    fig_hist.add_trace(go.Scatter(
-                                        x=[p_idx], y=[p_low * 0.97],
-                                        mode='markers',
-                                        marker=dict(symbol='circle', size=12, color='#3b82f6', line=dict(width=2, color='white')),
-                                        name='SILENT ACCUM',
-                                        hovertemplate=f"<b>SILENT ACCUM</b><br>Score: {score_val}{h_info}",
-                                        showlegend=False
-                                    ), row=1, col=1)
-                                elif sig_type == 'BUY':
-                                    fig_hist.add_trace(go.Scatter(
-                                        x=[p_idx], y=[p_low * 0.98],
-                                        mode='markers',
-                                        marker=dict(symbol='triangle-up', size=15, color='#10b981'),
-                                        name='BUY Signal',
-                                        hovertemplate=f"Signal: BUY<br>Score: {score_val}{h_info}",
-                                        showlegend=False
-                                    ), row=1, col=1)
-                                elif sig_type in ['PIN BAR', 'RECOVERY']:
-                                    color = '#f59e0b' if sig_type == 'PIN BAR' else '#a855f7'
-                                    fig_hist.add_trace(go.Scatter(
-                                        x=[p_idx], y=[p_low * 0.98],
-                                        mode='markers',
-                                        marker=dict(symbol='circle', size=10, color=color),
-                                        name=f'{sig_type} Signal',
-                                        hovertemplate=f"Signal: {sig_type}<br>Score: {score_val}{h_info}",
-                                        showlegend=False
-                                    ), row=1, col=1)
+                            if not filtered_signals.empty:
+                                # Group by display signal to add traces correctly to legend
+                                for sig_name in selected_display_signals:
+                                    sig_type_df = filtered_signals[filtered_signals['display_signal'] == sig_name]
+                                    if sig_type_df.empty: continue
+                                    
+                                    style = SIGNAL_STYLE.get(sig_name, SIGNAL_STYLE['OTHER'])
+                                    
+                                    # Match dates with price index to get Y-position
+                                    plot_x = []
+                                    plot_y = []
+                                    hover_texts = []
+                                    
+                                    for _, s_row in sig_type_df.iterrows():
+                                        s_date = s_row['date_only']
+                                        # Find price for this date (Naive Date comparison)
+                                        price_match = hist_price[hist_price.index.date == s_date]
+                                        if not price_match.empty:
+                                            p_row = price_match.iloc[0]
+                                            plot_x.append(price_match.index[0])
+                                            
+                                            # Position based on signal type
+                                            if sig_name == 'OTHER':
+                                                plot_y.append(p_row['High'] * 1.02)
+                                            else:
+                                                plot_y.append(p_row['Low'] * 0.98)
+                                            
+                                            h_rsi = f"RSI: {s_row.get('rsi', 0):.1f}" if pd.notna(s_row.get('rsi')) else ""
+                                            h_vol = f"Vol: {s_row.get('volume', 0):,.0f}" if pd.notna(s_row.get('volume')) else ""
+                                            score = s_row.get('score', 'N/A')
+                                            hover_texts.append(f"<b>{sig_name}</b><br>Score: {score}<br>{h_rsi}<br>{h_vol}")
+
+                                    if plot_x:
+                                        fig_hist.add_trace(go.Scatter(
+                                            x=plot_x, y=plot_y,
+                                            mode='markers',
+                                            marker=dict(
+                                                symbol=style['symbol'], 
+                                                size=style['size'], 
+                                                color=style['color'],
+                                                line=dict(width=1, color='white') if sig_name == 'SILENT ACCUM' else None
+                                            ),
+                                            name=style['label'],
+                                            text=hover_texts,
+                                            hovertemplate="%{text}<extra></extra>",
+                                            showlegend=True
+                                        ), row=1, col=1)
                             
                             # 3. RSI Subplot
                             fig_hist.add_trace(go.Scatter(
