@@ -2519,14 +2519,17 @@ if st.session_state['batch_results'] is not None:
                                 # Standardize signal dates to 'YYYY-MM-DD' strings
                                 hist_signals['signal_date_str'] = pd.to_datetime(hist_signals['scanned_at']).dt.strftime('%Y-%m-%d')
                                 
-                                # Unify Signal Naming for Mapping
+                                # Unify Signal Naming for Mapping (Excluding SILENT ACCUM)
                                 def clean_signal_name(row):
                                     sig = str(row.get('signal', '')).upper()
                                     strat = str(row.get('strategy', '')).upper()
                                     is_silent = bool(row.get('is_silent_accum', False))
                                     
-                                    if 'SILENT' in sig or 'SILENT' in strat or is_silent: return 'SILENT ACCUM'
+                                    # EXCLUDE SILENT ACCUM (Moved to dedicated tab)
+                                    if 'SILENT' in sig or 'SILENT' in strat or is_silent: return None
+                                    
                                     if 'BUY' in sig or 'BREAKOUT' in sig: return 'BUY / BREAKOUT'
+                                    if 'SELL' in sig or 'WARNING' in sig or 'TAKE PROFIT' in sig: return 'SELL / WARNING'
                                     if 'PULLBACK' in sig or 'RETEST' in sig or 'PIN BAR' in sig: return 'PULLBACK / PIN BAR'
                                     if 'MOMENTUM' in sig or 'VOLUME' in sig or 'RECOVERY' in sig: return 'MOMENTUM / VOL'
                                     return 'OTHER'
@@ -2534,7 +2537,7 @@ if st.session_state['batch_results'] is not None:
                                 hist_signals['display_signal'] = hist_signals.apply(clean_signal_name, axis=1)
                                 
                                 # Dynamic Signal Selection Controls
-                                available_signals = sorted(hist_signals['display_signal'].unique().tolist())
+                                available_signals = sorted([s for s in hist_signals['display_signal'].unique().tolist() if s is not None])
                                 selected_display_signals = st.multiselect(
                                     "🎯 เลือกประเภทสัญญาณที่ต้องการแสดง (Multi-Signal Overlay)", 
                                     available_signals, 
@@ -2560,7 +2563,7 @@ if st.session_state['batch_results'] is not None:
                                 )
                                 
                                 # Print Debug Summary to Streamlit (Temporary Check)
-                                st.caption(f"🔍 DEBUG: Found {len(filtered_signals)} signals for {sel_hist_ticker} (Last 90 days)")
+                                st.caption(f"🔍 DEBUG: Found {len(filtered_signals)} technical signals for {sel_hist_ticker} (Last 90 days)")
                             else:
                                 filtered_signals = pd.DataFrame()
                                 selected_display_signals = []
@@ -2579,12 +2582,13 @@ if st.session_state['batch_results'] is not None:
                             ), row=1, col=1)
                             
                             # 2. Add Multi-Signal Markers (Overlay using Exact Date Matching)
+                            # Optimized Color & Symbol Mapping for Technical Signals
                             SIGNAL_STYLE = {
-                                'SILENT ACCUM': {'symbol': 'circle', 'color': '#3b82f6', 'size': 12, 'label': '🔵 SILENT ACCUM'},
-                                'BUY / BREAKOUT': {'symbol': 'triangle-up', 'color': '#10b981', 'size': 15, 'label': '🟢 BUY / BREAKOUT'},
+                                'BUY / BREAKOUT': {'symbol': 'triangle-up', 'color': '#10b981', 'size': 14, 'label': '🟢 BUY / BREAKOUT'},
+                                'SELL / WARNING': {'symbol': 'triangle-down', 'color': '#ef4444', 'size': 14, 'label': '🔴 SELL / WARNING'},
                                 'PULLBACK / PIN BAR': {'symbol': 'diamond', 'color': '#f59e0b', 'size': 12, 'label': '🟡 PULLBACK / PIN BAR'},
                                 'MOMENTUM / VOL': {'symbol': 'square', 'color': '#a855f7', 'size': 12, 'label': '🟣 MOMENTUM / VOL'},
-                                'OTHER': {'symbol': 'triangle-down', 'color': '#ef4444', 'size': 10, 'label': '🔴 OTHER'}
+                                'OTHER': {'symbol': 'cross', 'color': '#ef4444', 'size': 10, 'label': '🔴 OTHER'}
                             }
 
                             if not filtered_signals.empty:
@@ -2606,12 +2610,15 @@ if st.session_state['batch_results'] is not None:
                                         
                                         style = SIGNAL_STYLE.get(sig_name, SIGNAL_STYLE['OTHER'])
                                         
+                                        # Strict Y-axis Alignment based on Signal Type
                                         y_pos = []
                                         for _, m_row in sig_group.iterrows():
-                                            if sig_name == 'OTHER':
-                                                y_pos.append(m_row['High'] * 1.02)
-                                            else:
+                                            # Buy-side signals -> Below candle
+                                            if sig_name in ['BUY / BREAKOUT', 'PULLBACK / PIN BAR', 'MOMENTUM / VOL']:
                                                 y_pos.append(m_row['Low'] * 0.98)
+                                            # Sell-side/Warning/Other signals -> Above candle
+                                            else:
+                                                y_pos.append(m_row['High'] * 1.02)
                                         
                                         hover_texts = []
                                         for _, m_row in sig_group.iterrows():
@@ -2628,7 +2635,7 @@ if st.session_state['batch_results'] is not None:
                                                 symbol=style['symbol'], 
                                                 size=style['size'], 
                                                 color=style['color'],
-                                                line=dict(width=1, color='white') if sig_name == 'SILENT ACCUM' else None
+                                                line=dict(width=1, color='white') # Add white border for visibility
                                             ),
                                             name=style['label'],
                                             text=hover_texts,
