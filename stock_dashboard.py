@@ -1071,21 +1071,57 @@ def get_stock_info(ticker):
 
 @st.cache_data(ttl=3600)
 def get_stock_data(ticker):
+    """
+    Fetch historical stock data with robust fallback mechanism.
+    Tries yahooquery first, then yfinance if it fails.
+    """
+    if not ticker:
+        return None
+        
+    # Clean ticker: Strip spaces, ensure .BK suffix for Thai stocks if missing
+    ticker = ticker.strip().upper()
+    if not ticker.endswith('.BK') and not ticker.startswith('^'):
+        ticker = f"{ticker}.BK"
+        
     try:
+        # 1. Try YahooQuery (often faster and handles symbols better)
         session = requests.Session()
         session.headers.update({'User-Agent': 'Mozilla/5.0'})
         t = yq.Ticker(ticker, session=session)
-        df = t.history(start="2018-01-01").reset_index()
-        if "symbol" in df.columns: df = df[df["symbol"] == ticker]
-        if df.empty: return None
+        df = t.history(start="2018-01-01")
         
-        # Ensure date column is datetime and set as index
-        df['date'] = pd.to_datetime(df['date'])
-        df = df.set_index("date")[["close", "volume", "open", "high", "low"]].rename(
-            columns={"close": "Close", "volume": "Volume", "open": "Open", "high": "High", "low": "Low"}
-        )
-        return df
-    except:
+        if df is not None and not df.empty:
+            if isinstance(df.index, pd.MultiIndex):
+                df = df.reset_index()
+            else:
+                df = df.reset_index()
+                
+            if "symbol" in df.columns: 
+                df = df[df["symbol"] == ticker]
+            
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date'])
+                df = df.set_index("date")[["close", "volume", "open", "high", "low"]].rename(
+                    columns={"close": "Close", "volume": "Volume", "open": "Open", "high": "High", "low": "Low"}
+                )
+                return df
+
+        # 2. Fallback to yfinance if YahooQuery fails
+        print(f"⚠️ YahooQuery failed for {ticker}, falling back to yfinance...")
+        yf_ticker = yf.Ticker(ticker)
+        df_yf = yf_ticker.history(period="2y") # Get 2 years for context
+        
+        if df_yf is not None and not df_yf.empty:
+            # Ensure standard OHLCV column names
+            df_yf = df_yf[["Close", "Volume", "Open", "High", "Low"]]
+            # Ensure index is naive datetime (to match our convention)
+            if df_yf.index.tz is not None:
+                df_yf.index = df_yf.index.tz_convert(SET_TZ).tz_localize(None)
+            return df_yf
+            
+        return None
+    except Exception as e:
+        print(f"❌ Critical error fetching data for {ticker}: {e}")
         return None
 
 
@@ -2229,20 +2265,82 @@ if st.session_state['batch_results'] is not None:
                         # (I will keep the chart code as it was in my previous successful edit)
                         with st.spinner(f"ดึงข้อมูลกราฟสำหรับ {sel_sa_ticker}..."):
                             hist_price_raw = get_stock_data(sel_sa_ticker)
+                            
                             if hist_price_raw is not None and not hist_price_raw.empty:
+                                # Standardize for plotting (Last 180 days)
                                 df_plot = hist_price_raw.tail(180).copy()
-                                df_plot.index = pd.to_datetime(df_plot.index)
-                                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-                                fig.add_trace(go.Candlestick(x=df_plot.index, open=df_plot['Open'], high=df_plot['High'], low=df_plot['Low'], close=df_plot['Close'], name='Price'), row=1, col=1)
-                                fig.add_trace(go.Bar(x=df_plot.index, y=df_plot['Volume'], name='Volume', marker_color='rgba(100, 100, 100, 0.5)'), row=2, col=1)
-                                sig_dates = pd.to_datetime(ticker_sa['signal_date']).tolist()
-                                df_plot_dates = df_plot.index.normalize().date
-                                marker_indices = [i for i, d in enumerate(df_plot_dates) if d in [sd.date() for sd in sig_dates]]
-                                markers = df_plot.iloc[marker_indices]
+                                # Ensure index is naive datetime for Plotly and marker alignment
+                                if df_plot.index.tz is not None:
+                                    df_plot.index = df_plot.index.tz_convert(SET_TZ).tz_localize(None)
+                                
+                                # 1. Create Subplots: Price (Candlestick) + Volume
+                                fig = make_subplots(
+                                    rows=2, cols=1, 
+                                    shared_xaxes=True, 
+                                    vertical_spacing=0.05, 
+                                    row_heights=[0.7, 0.3]
+                                )
+                                
+                                # Candlestick
+                                fig.add_trace(go.Candlestick(
+                                    x=df_plot.index, 
+                                    open=df_plot['Open'], 
+                                    high=df_plot['High'], 
+                                    low=df_plot['Low'], 
+                                    close=df_plot['Close'], 
+                                    name='Price'
+                                ), row=1, col=1)
+                                
+                                # Volume
+                                fig.add_trace(go.Bar(
+                                    x=df_plot.index, 
+                                    y=df_plot['Volume'], 
+                                    name='Volume', 
+                                    marker_color='rgba(100, 100, 100, 0.5)'
+                                ), row=2, col=1)
+                                
+                                # 2. Add SILENT ACCUM Markers (Pin to Low Price)
+                                # Alignment: Convert signal dates to naive date objects for comparison
+                                sig_dates = pd.to_datetime(ticker_sa['signal_date']).dt.date.unique().tolist()
+                                df_plot_dates = df_plot.index.date
+                                
+                                # Filter rows in df_plot that match a signal date
+                                marker_mask = [d in sig_dates for d in df_plot_dates]
+                                markers = df_plot[marker_mask].copy()
+                                
                                 if not markers.empty:
-                                    fig.add_trace(go.Scatter(x=markers.index, y=markers['Low'] * 0.98, mode='markers', marker=dict(symbol='triangle-up', size=15, color='#3b82f6', line=dict(width=2, color='white')), name='SILENT ACCUM Signal', hovertemplate='<b>SILENT ACCUM</b><br>Date: %{x}<br>Price: %{y:.2f}'), row=1, col=1)
-                                fig.update_layout(height=650, margin=dict(t=30, b=30, l=30, r=30), template='plotly_dark', xaxis_rangeslider_visible=False, showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                                    fig.add_trace(go.Scatter(
+                                        x=markers.index, 
+                                        y=markers['Low'] * 0.98, 
+                                        mode='markers', 
+                                        marker=dict(
+                                            symbol='triangle-up', 
+                                            size=15, 
+                                            color='#3b82f6', 
+                                            line=dict(width=2, color='white')
+                                        ), 
+                                        name='SILENT ACCUM Signal', 
+                                        hovertemplate='<b>SILENT ACCUM</b><br>Date: %{x}<br>Price: %{y:.2f}'
+                                    ), row=1, col=1)
+                                
+                                # Final Layout Update
+                                fig.update_layout(
+                                    height=650, 
+                                    margin=dict(t=30, b=30, l=30, r=30), 
+                                    template='plotly_dark', 
+                                    xaxis_rangeslider_visible=False, 
+                                    showlegend=True, 
+                                    legend=dict(
+                                        orientation="h", 
+                                        yanchor="bottom", 
+                                        y=1.02, 
+                                        xanchor="right", 
+                                        x=1
+                                    )
+                                )
                                 st.plotly_chart(fig, use_container_width=True)
+                            else:
+                                st.warning(f"⚠️ ไม่สามารถดึงข้อมูลราคาของ {sel_sa_ticker} จาก Yahoo Finance ได้ในขณะนี้ กรุณาลองใหม่อีกครั้งหรือตรวจสอบ Ticker")
                         
                         # 2. Intraday Signal History Table (Below Chart)
                         st.write(f"**Intraday Signal History: {sel_sa_ticker}**")
