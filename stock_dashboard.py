@@ -759,7 +759,7 @@ def fetch_ticker_combined_history(ticker, days=90):
         
         # 1. Fetch from scan_results
         res1 = supabase.table("scan_results") \
-            .select("scan_date, signal_type, bull_score, price") \
+            .select("ticker, scan_date, signal_type, bull_score, price") \
             .eq("ticker", ticker) \
             .gte("scan_date", start_date[:10]) \
             .execute()
@@ -777,7 +777,7 @@ def fetch_ticker_combined_history(ticker, days=90):
         
         # 2. Fetch from auto_scan_results
         res2 = supabase.table("auto_scan_results") \
-            .select("scanned_at, signal, strategy, score, close_price, is_silent_accum, rsi, volume") \
+            .select("ticker, scanned_at, signal, strategy, score, close_price, is_silent_accum, rsi, volume") \
             .eq("ticker", ticker) \
             .gte("scanned_at", start_date) \
             .execute()
@@ -792,12 +792,15 @@ def fetch_ticker_combined_history(ticker, days=90):
         if combined.empty:
             return pd.DataFrame()
             
-        # Sort and deduplicate by date and signal type
-        # We keep one record per ticker-date-signal combination to allow multi-signal overlay
+        # STRICT TICKER FILTERING (Extra Safety)
+        combined = combined[combined['ticker'] == ticker].copy()
+            
+        # Sort and deduplicate by date, ticker and signal type
+        # We keep one record per ticker-date-signal combination
         combined['date_only'] = combined['scanned_at'].dt.date
         combined = combined.sort_values('scanned_at', ascending=True)
         # Use keep='first' as per "First Signal Wins" logic for intraday signals
-        combined = combined.drop_duplicates(subset=['date_only', 'signal'], keep='first')
+        combined = combined.drop_duplicates(subset=['ticker', 'date_only', 'signal'], keep='first')
         
         return combined.drop(columns=['date_only'])
     except Exception as e:
@@ -2534,8 +2537,18 @@ if st.session_state['batch_results'] is not None:
                                     key="hist_sig_multiselect"
                                 )
                                 
-                                # Filter signals by selected types
-                                filtered_signals = hist_signals[hist_signals['display_signal'].isin(selected_display_signals)].copy()
+                                # Filter signals by selected types and ticker
+                                filtered_signals = hist_signals[
+                                    (hist_signals['display_signal'].isin(selected_display_signals)) & 
+                                    (hist_signals['ticker'] == sel_hist_ticker)
+                                ].copy()
+                                
+                                # FINAL DEDUPLICATION: Ensure 1 marker per Category per Day
+                                filtered_signals = filtered_signals.sort_values('scanned_at', ascending=True)
+                                filtered_signals = filtered_signals.drop_duplicates(
+                                    subset=['signal_date_str', 'display_signal'], 
+                                    keep='first'
+                                )
                             else:
                                 filtered_signals = pd.DataFrame()
                                 selected_display_signals = []
