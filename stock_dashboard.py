@@ -748,19 +748,25 @@ def fetch_market_scan_results():
     return combined
 
 def fetch_ticker_combined_history(ticker, days=90):
-    """Retrieve historical scan signals from both scan_results and auto_scan_results."""
+    """Retrieve historical scan signals from both scan_results and auto_scan_results with strict ticker filtering."""
     if not supabase:
         return pd.DataFrame()
     try:
+        # Standardize ticker for query
+        clean_ticker = ticker.strip().upper()
+        base_ticker = clean_ticker.replace('.BK', '')
+        bk_ticker = base_ticker + '.BK'
+        ticker_list = list(set([base_ticker, bk_ticker]))
+        
         # Use start of day for query to be safe
         now_th = datetime.now(SET_TZ)
         start_dt = (now_th - timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
         start_date = start_dt.isoformat()
         
-        # 1. Fetch from scan_results
+        # 1. Fetch from scan_results - STRICT SQL FILTERING
         res1 = supabase.table("scan_results") \
             .select("ticker, scan_date, signal_type, bull_score, price") \
-            .eq("ticker", ticker) \
+            .in_("ticker", ticker_list) \
             .gte("scan_date", start_date[:10]) \
             .execute()
         
@@ -775,10 +781,10 @@ def fetch_ticker_combined_history(ticker, days=90):
             df1['scanned_at'] = pd.to_datetime(df1['scanned_at']).dt.tz_localize(None)
             df1['source'] = 'manual'
         
-        # 2. Fetch from auto_scan_results
+        # 2. Fetch from auto_scan_results - STRICT SQL FILTERING
         res2 = supabase.table("auto_scan_results") \
             .select("ticker, scanned_at, signal, strategy, score, close_price, is_silent_accum, rsi, volume") \
-            .eq("ticker", ticker) \
+            .in_("ticker", ticker_list) \
             .gte("scanned_at", start_date) \
             .execute()
             
@@ -792,11 +798,10 @@ def fetch_ticker_combined_history(ticker, days=90):
         if combined.empty:
             return pd.DataFrame()
             
-        # STRICT TICKER FILTERING (Extra Safety)
-        combined = combined[combined['ticker'] == ticker].copy()
+        # Normalize ticker column for consistent deduplication
+        combined['ticker'] = combined['ticker'].str.strip().str.upper()
             
         # Sort and deduplicate by date, ticker and signal type
-        # We keep one record per ticker-date-signal combination
         combined['date_only'] = combined['scanned_at'].dt.date
         combined = combined.sort_values('scanned_at', ascending=True)
         # Use keep='first' as per "First Signal Wins" logic for intraday signals
@@ -2538,9 +2543,13 @@ if st.session_state['batch_results'] is not None:
                                 )
                                 
                                 # Filter signals by selected types and ticker
+                                clean_sel_ticker = sel_hist_ticker.strip().upper()
+                                base_sel_ticker = clean_sel_ticker.replace('.BK', '')
+                                hist_signals['ticker_clean'] = hist_signals['ticker'].str.strip().str.upper().str.replace('.BK', '')
+                                
                                 filtered_signals = hist_signals[
                                     (hist_signals['display_signal'].isin(selected_display_signals)) & 
-                                    (hist_signals['ticker'] == sel_hist_ticker)
+                                    (hist_signals['ticker_clean'] == base_sel_ticker)
                                 ].copy()
                                 
                                 # FINAL DEDUPLICATION: Ensure 1 marker per Category per Day
@@ -2549,6 +2558,9 @@ if st.session_state['batch_results'] is not None:
                                     subset=['signal_date_str', 'display_signal'], 
                                     keep='first'
                                 )
+                                
+                                # Print Debug Summary to Streamlit (Temporary Check)
+                                st.caption(f"🔍 DEBUG: Found {len(filtered_signals)} signals for {sel_hist_ticker} (Last 90 days)")
                             else:
                                 filtered_signals = pd.DataFrame()
                                 selected_display_signals = []
@@ -2556,9 +2568,9 @@ if st.session_state['batch_results'] is not None:
                             # Create Plotly Chart
                             fig_hist = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
                             
-                            # 1. Candlestick (Use date_str as X-axis for stability)
+                            # 1. Candlestick (Use Datetime Index for X-axis)
                             fig_hist.add_trace(go.Candlestick(
-                                x=hist_price['date_str'],
+                                x=hist_price.index,
                                 open=hist_price['Open'],
                                 high=hist_price['High'],
                                 low=hist_price['Low'],
@@ -2576,8 +2588,7 @@ if st.session_state['batch_results'] is not None:
                             }
 
                             if not filtered_signals.empty:
-                                # STRICT EXACT DATE MERGE: Join signals with price data on date string
-                                # This ensures markers only appear on valid trading days and correct candles
+                                # Join signals with price data on date string to get correct OHLC positions
                                 df_markers = hist_price.merge(
                                     filtered_signals, 
                                     left_on='date_str', 
@@ -2586,14 +2597,15 @@ if st.session_state['batch_results'] is not None:
                                 )
                                 
                                 if not df_markers.empty:
-                                    # Plot each group to have individual legend items
+                                    # Ensure the merged dataframe has the original datetime index for plotting
+                                    df_markers.index = pd.to_datetime(df_markers['date_str'])
+                                    
                                     for sig_name in selected_display_signals:
                                         sig_group = df_markers[df_markers['display_signal'] == sig_name]
                                         if sig_group.empty: continue
                                         
                                         style = SIGNAL_STYLE.get(sig_name, SIGNAL_STYLE['OTHER'])
                                         
-                                        # Determine Y-position based on OHLC
                                         y_pos = []
                                         for _, m_row in sig_group.iterrows():
                                             if sig_name == 'OTHER':
@@ -2601,7 +2613,6 @@ if st.session_state['batch_results'] is not None:
                                             else:
                                                 y_pos.append(m_row['Low'] * 0.98)
                                         
-                                        # Hover texts
                                         hover_texts = []
                                         for _, m_row in sig_group.iterrows():
                                             h_rsi = f"RSI: {m_row.get('rsi', 0):.1f}" if pd.notna(m_row.get('rsi')) else ""
@@ -2610,7 +2621,7 @@ if st.session_state['batch_results'] is not None:
                                             hover_texts.append(f"<b>{sig_name}</b><br>Score: {score}<br>{h_rsi}<br>{h_vol}")
 
                                         fig_hist.add_trace(go.Scatter(
-                                            x=sig_group['date_str'], 
+                                            x=sig_group.index, 
                                             y=y_pos,
                                             mode='markers',
                                             marker=dict(
@@ -2625,9 +2636,9 @@ if st.session_state['batch_results'] is not None:
                                             showlegend=True
                                         ), row=1, col=1)
                             
-                            # 3. RSI Subplot (Use date_str for X alignment)
+                            # 3. RSI Subplot
                             fig_hist.add_trace(go.Scatter(
-                                x=hist_price['date_str'], y=hist_price['RSI'],
+                                x=hist_price.index, y=hist_price['RSI'],
                                 name="RSI", line=dict(color='#8b5cf6', width=2)
                             ), row=2, col=1)
                             
