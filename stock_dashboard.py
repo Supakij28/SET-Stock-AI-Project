@@ -2498,7 +2498,7 @@ if st.session_state['batch_results'] is not None:
                 st.subheader("📈 Stock Historical Signal Analysis")
                 st.caption("📊 **Historical Analysis:** เจาะลึกประวัติสัญญาณเทรดและแนวโน้มราคาย้อนหลัง 90 วัน (Hybrid Data)")
                 
-                all_tickers = sorted(combined_df['ticker'].unique().tolist())
+                all_tickers = sorted([str(t) for t in combined_df['ticker'].dropna().unique().tolist()])
                 sel_hist_ticker = st.selectbox("เลือกหุ้นเพื่อดูประวัติสัญญาณ", all_tickers, key="mkt_hist_ticker_select")
                 
                 if sel_hist_ticker:
@@ -2537,7 +2537,8 @@ if st.session_state['batch_results'] is not None:
                                 hist_signals['display_signal'] = hist_signals.apply(clean_signal_name, axis=1)
                                 
                                 # Dynamic Signal Selection Controls
-                                available_signals = sorted([s for s in hist_signals['display_signal'].unique().tolist() if s is not None])
+                                # Filter out None/NaN and get unique sorted list
+                                available_signals = sorted([str(s) for s in hist_signals['display_signal'].dropna().unique().tolist()])
                                 selected_display_signals = st.multiselect(
                                     "🎯 เลือกประเภทสัญญาณที่ต้องการแสดง (Multi-Signal Overlay)", 
                                     available_signals, 
