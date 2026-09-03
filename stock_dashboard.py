@@ -2529,10 +2529,11 @@ if st.session_state['batch_results'] is not None:
                                     if 'SILENT' in sig or 'SILENT' in strat or is_silent: return None
                                     
                                     if 'BUY' in sig or 'BREAKOUT' in sig: return 'BUY / BREAKOUT'
-                                    if 'SELL' in sig or 'WARNING' in sig or 'TAKE PROFIT' in sig: return 'SELL / WARNING'
                                     if 'PULLBACK' in sig or 'RETEST' in sig or 'PIN BAR' in sig: return 'PULLBACK / PIN BAR'
                                     if 'MOMENTUM' in sig or 'VOLUME' in sig or 'RECOVERY' in sig: return 'MOMENTUM / VOL'
-                                    return 'OTHER'
+                                    
+                                    # Default all other bearish/unknown to SELL / WARNING
+                                    return 'SELL / WARNING'
 
                                 hist_signals['display_signal'] = hist_signals.apply(clean_signal_name, axis=1)
                                 
@@ -2588,8 +2589,7 @@ if st.session_state['batch_results'] is not None:
                                 'BUY / BREAKOUT': {'symbol': 'triangle-up', 'color': '#10b981', 'size': 14, 'label': '🟢 BUY / BREAKOUT'},
                                 'SELL / WARNING': {'symbol': 'triangle-down', 'color': '#ef4444', 'size': 14, 'label': '🔴 SELL / WARNING'},
                                 'PULLBACK / PIN BAR': {'symbol': 'diamond', 'color': '#f59e0b', 'size': 12, 'label': '🟡 PULLBACK / PIN BAR'},
-                                'MOMENTUM / VOL': {'symbol': 'square', 'color': '#a855f7', 'size': 12, 'label': '🟣 MOMENTUM / VOL'},
-                                'OTHER': {'symbol': 'cross', 'color': '#ef4444', 'size': 10, 'label': '🔴 OTHER'}
+                                'MOMENTUM / VOL': {'symbol': 'square', 'color': '#a855f7', 'size': 12, 'label': '🟣 MOMENTUM / VOL'}
                             }
 
                             if not filtered_signals.empty:
@@ -2609,7 +2609,7 @@ if st.session_state['batch_results'] is not None:
                                         sig_group = df_markers[df_markers['display_signal'] == sig_name]
                                         if sig_group.empty: continue
                                         
-                                        style = SIGNAL_STYLE.get(sig_name, SIGNAL_STYLE['OTHER'])
+                                        style = SIGNAL_STYLE.get(sig_name, SIGNAL_STYLE['SELL / WARNING'])
                                         
                                         # Strict Y-axis Alignment based on Signal Type
                                         y_pos = []
@@ -2626,7 +2626,10 @@ if st.session_state['batch_results'] is not None:
                                             h_rsi = f"RSI: {m_row.get('rsi', 0):.1f}" if pd.notna(m_row.get('rsi')) else ""
                                             h_vol = f"Vol: {m_row.get('volume', 0):,.0f}" if pd.notna(m_row.get('volume')) else ""
                                             score = m_row.get('score', 'N/A')
-                                            hover_texts.append(f"<b>{sig_name}</b><br>Score: {score}<br>{h_rsi}<br>{h_vol}")
+                                            
+                                            # Use specific signal name for tooltip if category is SELL / WARNING
+                                            display_title = m_row.get('signal', sig_name) if sig_name == 'SELL / WARNING' else sig_name
+                                            hover_texts.append(f"<b>{display_title}</b><br>Score: {score}<br>{h_rsi}<br>{h_vol}")
 
                                         fig_hist.add_trace(go.Scatter(
                                             x=sig_group.index, 
