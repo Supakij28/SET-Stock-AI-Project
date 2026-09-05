@@ -2014,22 +2014,56 @@ with main_tabs[0]: # Smart Pattern Radar
         # Fetch latest standardized results
         df_all = fetch_market_scan_results()
         
-        if not df_all.empty:
-            # 1st Priority: Conviction Score >= 70
+        # Safe Fallback to Session State if Supabase returns nothing
+        if (df_all is None or df_all.empty) and st.session_state.get('batch_results') is not None:
+            batch_data = st.session_state['batch_results'].get('df', pd.DataFrame())
+            if not batch_data.empty:
+                df_all = batch_data.copy()
+                # Map session state columns to standard internal names
+                col_map = {'Conviction_Score': 'score', 'Signal': 'signal', 'Ticker': 'ticker', 'Last Price': 'close_price', 'Relative Vol': 'relative_vol'}
+                for old_c, new_c in col_map.items():
+                    if old_c in df_all.columns and new_c not in df_all.columns:
+                        df_all[new_c] = df_all[old_c]
+        
+        if df_all is not None and not df_all.empty:
+            # P0: Safe Score Column Access
+            if 'score' not in df_all.columns:
+                df_all['score'] = df_all.get('conviction_score', df_all.get('Conviction_Score', df_all.get('Score', 0)))
+            
+            # Ensure relative_vol exists
+            if 'relative_vol' not in df_all.columns:
+                df_all['relative_vol'] = df_all.get('rel_vol', np.nan)
+
+            # --- Relaxed Fallback Query Chain ---
+            
+            # Tier 1: Conviction Score >= 70
             df_radar = df_all[
                 (df_all['score'] >= 70) & 
                 ((df_all['relative_vol'] >= 1.2) | (df_all['relative_vol'].isna())) &
-                (df_all['signal'].isin(['BUY', 'GOLDEN BUY', 'PRE-FLY', 'SILENT ACCUM', 'BREAKOUT']))
+                (df_all['signal'].str.upper().isin(['BUY', 'GOLDEN BUY', 'PRE-FLY', 'SILENT ACCUM', 'BREAKOUT']) if 'signal' in df_all.columns else False)
             ].copy()
+            radar_status_msg = "High Conviction"
             
-            # 2nd Priority (Fallback): Top 10 stocks with Conviction Score >= 50
+            # Tier 2: Conviction Score >= 50
             if df_radar.empty:
                 df_radar = df_all[
                     (df_all['score'] >= 50) & 
-                    (df_all['signal'].isin(['BUY', 'GOLDEN BUY', 'PRE-FLY', 'SILENT ACCUM', 'BREAKOUT']))
+                    (df_all['signal'].str.upper().isin(['BUY', 'GOLDEN BUY', 'PRE-FLY', 'SILENT ACCUM', 'BREAKOUT']) if 'signal' in df_all.columns else False)
                 ].sort_values('score', ascending=False).head(10).copy()
                 if not df_radar.empty:
+                    radar_status_msg = "Moderate Conviction"
                     st.info("💡 Fallback Mode: แสดงหุ้น Top 10 ที่มีคะแนนความเชื่อมั่นสูงสุด (Conviction >= 50)")
+            
+            # Tier 3 (Ultimate Fallback): Latest Scan, no threshold
+            if df_radar.empty:
+                df_radar = df_all.sort_values('score', ascending=False).head(20).copy()
+                if not df_radar.empty:
+                    radar_status_msg = "Watchlist / Low Conviction"
+                    st.info("💡 Ultimate Fallback: แสดงรายการหุ้นจากรอบสแกนล่าสุด (Watchlist / Low Conviction)")
+            
+            # Add status label to dataframe
+            if not df_radar.empty:
+                df_radar['Radar_Status'] = radar_status_msg
             
             # 2. Historical Outcome Verification
             def get_win_rate(sig):
@@ -2050,7 +2084,7 @@ with main_tabs[0]: # Smart Pattern Radar
                 radar_cols = {
                     'ticker': 'Ticker', 
                     'signal': 'Signal', 
-                    'bull_score': 'DTW Match',
+                    'Radar_Status': 'Status',
                     'score': 'Conviction', 
                     'Win_Rate': 'Win Rate (%)', 
                     'Avg_Return': 'Avg Ret (%)',
@@ -2103,7 +2137,7 @@ with main_tabs[0]: # Smart Pattern Radar
                         fig.update_layout(title=f"Trade Plan: {selected_ticker}", height=600, template="plotly_dark")
                         st.plotly_chart(fig, use_container_width=True)
             else:
-                st.warning("ยังไม่พบหุ้นที่มีสัญญาณ Pre-Breakout คุณภาพสูงในขณะนี้ (Conviction < 50)")
+                st.warning("ไม่พบหุ้นที่เข้าเกณฑ์การวิเคราะห์ในขณะนี้")
         else:
             st.warning("ไม่สามารถโหลดข้อมูลการสแกนล่าสุดได้")
     except Exception as e:
