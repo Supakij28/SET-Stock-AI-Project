@@ -2106,15 +2106,18 @@ with main_tabs[0]: # Smart Pattern Radar
                     entry_price = ticker_row['close_price']
                     
                     # Fetch price data for ATR and Chart
-                    df_chart = get_stock_data(selected_ticker)
-                    if df_chart is not None and not df_chart.empty:
-                        df_chart = calculate_quant_indicators(df_chart)
-                        atr = df_chart['ATR'].iloc[-1]
+                    df_full = get_stock_data(selected_ticker)
+                    if df_full is not None and not df_full.empty:
+                        df_full = calculate_quant_indicators(df_full)
+                        atr = df_full['ATR'].iloc[-1]
                         
                         # Plan Levels
                         stop_loss = entry_price - (atr * 2)
                         risk = entry_price - stop_loss
                         target = entry_price + (risk * 2)
+                        
+                        # Limit to last 90 days for chart display
+                        df_chart = df_full.tail(90).copy()
                         
                         # Layout Metrics
                         m1, m2, m3 = st.columns(3)
@@ -2134,7 +2137,17 @@ with main_tabs[0]: # Smart Pattern Radar
                         fig.add_hline(y=stop_loss, line_dash="dash", line_color="red", annotation_text="Stop Loss")
                         fig.add_hline(y=target, line_dash="dash", line_color="green", annotation_text="Target (1:2)")
                         
-                        fig.update_layout(title=f"Trade Plan: {selected_ticker}", height=600, template="plotly_dark")
+                        # Auto-fit Y-Axis Scale based on levels and recent prices
+                        y_min = min(df_chart['Low'].min(), stop_loss) * 0.95
+                        y_max = max(df_chart['High'].max(), target) * 1.05
+                        
+                        fig.update_layout(
+                            title=f"Trade Plan: {selected_ticker} (Last 90 Days)", 
+                            height=550, 
+                            template="plotly_dark",
+                            yaxis=dict(range=[y_min, y_max], fixedrange=False),
+                            xaxis=dict(rangeslider=dict(visible=False))
+                        )
                         st.plotly_chart(fig, use_container_width=True)
             else:
                 st.warning("ไม่พบหุ้นที่เข้าเกณฑ์การวิเคราะห์ในขณะนี้")
