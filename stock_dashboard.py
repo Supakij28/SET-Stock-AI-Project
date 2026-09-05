@@ -712,7 +712,7 @@ def fetch_market_scan_results():
         return pd.DataFrame()
         
     # Standardize columns to avoid InvalidIndexError
-    cols = ['ticker', 'signal', 'score', 'strategy', 'close_price', 'change_percent', 'rsi', 'scanned_at', 'source', 'is_pinbar', 'is_silent_accum']
+    cols = ['ticker', 'signal', 'score', 'strategy', 'close_price', 'change_percent', 'rsi', 'scanned_at', 'source', 'is_pinbar', 'is_silent_accum', 'relative_vol', 'bull_score', 'conviction_score']
     
     def clean_df(df):
         if df.empty:
@@ -723,12 +723,19 @@ def fetch_market_scan_results():
         df.reset_index(drop=True, inplace=True)
         # 3. Ensure 'score' exists
         if 'score' not in df.columns:
-            df['score'] = df.get('conviction_score', df.get('bull_score'))
+            df['score'] = df.get('conviction_score', df.get('bull_score', df.get('score')))
         
         # 4. Fill missing columns
         for c in cols:
             if c not in df.columns:
-                df[c] = None
+                if c == 'relative_vol':
+                    df[c] = df.get('relative_vol', df.get('rel_vol'))
+                elif c == 'bull_score':
+                    df[c] = df.get('bull_score', df.get('score'))
+                elif c == 'conviction_score':
+                    df[c] = df.get('conviction_score', df.get('score'))
+                else:
+                    df[c] = None
         return df[cols]
 
     df_auto_clean = clean_df(df_auto)
@@ -1951,18 +1958,141 @@ if st.session_state['batch_results'] is not None:
             </style>
         """), unsafe_allow_html=True)
 
-        # --- MAIN UI TABS ---
-        main_tabs = st.tabs([
-            "🚀 Unified Report", 
-            "💎 Bottom Fishing", 
-            "📊 Market Breadth", 
-            "📜 Admin & History", 
-            "💎 SILENT ACCUM Insight",
-            "📊 Market Scan Results (SET100)",
-            "🛠️ Advanced Tools / More Features"
-        ])
+        # --- Helper Functions for Radar ---
+def get_radar_performance_stats(supabase):
+    """Calculate Win Rate and Avg Return from trading_log (Last 30 days)."""
+    if not supabase: return {}
+    try:
+        thirty_days_ago = (datetime.now(SET_TZ) - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+        response = supabase.table("trading_log") \
+            .select("signal, status, outcome_t3_pct") \
+            .gte("timestamp", thirty_days_ago) \
+            .execute()
         
-        with main_tabs[0]: # Unified Report
+        if not response.data: return {}
+            
+        df_perf = pd.DataFrame(response.data)
+        if df_perf.empty: return {}
+            
+        def standardize_signal(sig):
+            sig = str(sig).upper()
+            if 'BUY' in sig or 'BREAKOUT' in sig: return 'BUY / BREAKOUT'
+            if 'PULLBACK' in sig or 'PIN BAR' in sig: return 'PULLBACK / PIN BAR'
+            if 'SILENT' in sig: return 'SILENT ACCUM'
+            return 'OTHER'
+            
+        df_perf['signal_cat'] = df_perf['signal'].apply(standardize_signal)
+        
+        stats = df_perf.groupby('signal_cat').agg(
+            Win_Rate=('status', lambda x: (x == 'Success').sum() / len(x) * 100 if len(x) > 0 else 0),
+            Avg_Return=('outcome_t3_pct', 'mean')
+        ).to_dict('index')
+        return stats
+    except:
+        return {}
+
+# --- MAIN UI TABS ---
+main_tabs = st.tabs([
+    "🎯 Smart Pattern Radar",
+    "🚀 Unified Report", 
+    "💎 Bottom Fishing", 
+    "📊 Market Breadth", 
+    "📜 Admin & History", 
+    "💎 SILENT ACCUM Insight",
+    "📊 Market Scan Results (SET100)",
+    "🛠️ Advanced Tools / More Features"
+])
+
+with main_tabs[0]: # Smart Pattern Radar
+    st.info("🎯 Smart Pattern Radar: ค้นหาหุ้น Pre-Breakout ที่มีความแม่นยำสูง (Conviction >= 70)")
+    
+    # 1. Selection Logic & Filtering
+    regime, _ = get_market_regime()
+    perf_stats = get_radar_performance_stats(supabase)
+    
+    # Fetch latest standardized results
+    df_all = fetch_market_scan_results()
+    
+    if not df_all.empty:
+        # Filter: Conviction Score >= 70, Rel Vol >= 1.2, Positive Signals
+        # Note: relative_vol is nullable in some cases, handle carefully
+        df_radar = df_all[
+            (df_all['score'] >= 70) & 
+            ((df_all['relative_vol'] >= 1.2) | (df_all['relative_vol'].isna())) &
+            (df_all['signal'].isin(['BUY', 'GOLDEN BUY', 'PRE-FLY', 'SILENT ACCUM', 'BREAKOUT']))
+        ].copy()
+        
+        # 2. Historical Outcome Verification
+        def get_win_rate(sig):
+            sig_cat = 'BUY / BREAKOUT' if 'BUY' in str(sig).upper() or 'BREAKOUT' in str(sig).upper() else \
+                      'SILENT ACCUM' if 'SILENT' in str(sig).upper() else 'OTHER'
+            stats = perf_stats.get(sig_cat, {})
+            return stats.get('Win_Rate', 0), stats.get('Avg_Return', 0)
+
+        if not df_radar.empty:
+            df_radar['Win_Rate'], df_radar['Avg_Return'] = zip(*df_radar['signal'].apply(get_win_rate))
+            
+            # Risk/Reward calculation (Entry/SL/Target)
+            # Default R:R 1:2
+            df_radar['RR_Ratio'] = "1:2.0"
+            
+            # Display Table
+            st.subheader("🔥 Top Pre-Breakout Candidates")
+            display_cols = ['ticker', 'signal', 'bull_score', 'score', 'Win_Rate', 'Avg_Return', 'RR_Ratio', 'close_price']
+            st.dataframe(
+                df_radar[display_cols].rename(columns={
+                    'ticker': 'Ticker', 'signal': 'Signal', 'bull_score': 'DTW Match',
+                    'score': 'Conviction', 'Win_Rate': 'Win Rate (%)', 'Avg_Return': 'Avg Ret (%)',
+                    'RR_Ratio': 'R:R Ratio', 'close_price': 'Price'
+                }),
+                use_container_width=True
+            )
+            
+            # 3. Interactive Chart & Levels
+            st.divider()
+            selected_ticker = st.selectbox("เลือกหุ้นเพื่อดูแผนเทรด (Trade Plan):", df_radar['ticker'].unique(), key="radar_ticker")
+            
+            if selected_ticker:
+                ticker_row = df_radar[df_radar['ticker'] == selected_ticker].iloc[0]
+                entry_price = ticker_row['close_price']
+                
+                # Fetch price data for ATR and Chart
+                df_chart = get_stock_data(selected_ticker)
+                if df_chart is not None and not df_chart.empty:
+                    df_chart = calculate_quant_indicators(df_chart)
+                    atr = df_chart['ATR'].iloc[-1]
+                    
+                    # Plan Levels
+                    stop_loss = entry_price - (atr * 2)
+                    risk = entry_price - stop_loss
+                    target = entry_price + (risk * 2)
+                    
+                    # Layout Metrics
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Entry Price", f"{entry_price:.2f}")
+                    m2.metric("Stop Loss (2*ATR)", f"{stop_loss:.2f}", delta=f"{(stop_loss/entry_price-1)*100:.1f}%", delta_color="inverse")
+                    m3.metric("Target Price (R:R 1:2)", f"{target:.2f}", delta=f"{(target/entry_price-1)*100:.1f}%")
+                    
+                    # Plotly Chart
+                    fig = go.Figure()
+                    fig.add_trace(go.Candlestick(
+                        x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
+                        low=df_chart['Low'], close=df_chart['Close'], name="Price"
+                    ))
+                    
+                    # Add Plan Lines
+                    fig.add_hline(y=entry_price, line_dash="dash", line_color="blue", annotation_text="Entry")
+                    fig.add_hline(y=stop_loss, line_dash="dash", line_color="red", annotation_text="Stop Loss")
+                    fig.add_hline(y=target, line_dash="dash", line_color="green", annotation_text="Target (1:2)")
+                    
+                    fig.update_layout(title=f"Trade Plan: {selected_ticker}", height=600, template="plotly_dark")
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("ยังไม่พบหุ้นที่มีสัญญาณ Pre-Breakout คุณภาพสูงในขณะนี้ (Conviction < 70)")
+    else:
+        st.warning("ไม่สามารถโหลดข้อมูลการสแกนล่าสุดได้")
+        
+        with main_tabs[1]: # Unified Report
             if not is_hist:
                 st.info("สรุปผลการวิเคราะห์เชิงปริมาณ (Search + Analyze + Persistence + Backtest)")
                 st.caption("🔍 **ระบบคัดกรองอัจฉริยะ:** รวม 3 กลยุทธ์ใหม่ (1) **Volume Compression** ตรวจจับวอลุ่มแห้งก่อนระเบิด (2) **Sector Flow Filter** คัดเฉพาะหุ้นที่แข็งแกร่งกว่ากลุ่ม (SRS) และ (3) **Dynamic Stop Loss** ปรับตามความผันผวนจริง (ATR)")
@@ -2043,7 +2173,7 @@ if st.session_state['batch_results'] is not None:
                 else:
                     st.info("ℹ️ ไม่พบหุ้นที่เข้าเกณฑ์ Unified")
         
-        with main_tabs[1]: # Bottom Fishing
+        with main_tabs[2]: # Bottom Fishing
             st.info("💎 หุ้นที่ Oversold และเริ่มมีสัญญาณกลับตัว (Bottom Fishing)")
             st.caption("🎯 **Feature Insight:** ค้นหาหุ้นที่มี RSI ต่ำกว่า 35 และเริ่มมีแรงซื้อกลับ (RSI Turning Up) พร้อม Candlestick รูปแบบ Bullish Pin Bar เพื่อหาจังหวะต้นเทรนด์")
             
@@ -2130,7 +2260,7 @@ if st.session_state['batch_results'] is not None:
             else:
                 st.info("ℹ️ ยังไม่มีข้อมูลการสแกนในระบบ (กรุณากด Run SET100 Batch Scan หรือรอระบบ Auto Scan)")
         
-        with main_tabs[2]: # Market Breadth
+        with main_tabs[3]: # Market Breadth
             st.subheader(f"📊 Market Breadth: หุ้นบวก {pos_count} | หุ้นลบ {neg_count}")
             st.caption("📈 **Market Breadth:** สรุปภาพรวมความแข็งแกร่งของตลาด SET100 ผ่านจำนวนหุ้นที่บวกและลบ เพื่อดูทิศทางกระแสเงินทุน (Money Flow)")
             
@@ -2156,7 +2286,7 @@ if st.session_state['batch_results'] is not None:
                     st.info(f"🔵 **Smart Money Accumulation Cluster Detected!**  \nพบหุ้น SET100 ติดสัญญาณ `SILENT ACCUM` พร้อมกัน **{sa_count} ตัว**  \n*แนวโน้ม: ตลาดมีโอกาสเกิด Reversal ขาขึ้นในระยะสั้น (Confidence: High)*")
                     st.caption("💡 **Feature Insight:** ระบบตรวจพบการเก็บของพร้อมกันในหลายตัว (Cluster) ซึ่งเป็นสัญญาณบ่งชี้ Market Breadth ว่าเงินทุนกำลังไหลเข้าสะสมหุ้นในกลุ่ม SET100")
 
-        with main_tabs[3]: # Admin & History
+        with main_tabs[4]: # Admin & History
             st.subheader("🏆 Leaderboard & History (Supabase)")
             st.caption("📜 **Data Persistence:** ดึงข้อมูลประวัติการสแกนและผลแพ้ชนะ (Win/Loss) ย้อนหลังโดยตรงจากฐานข้อมูล Cloud (Supabase)")
             # Sorting desired columns to the front
@@ -2242,7 +2372,7 @@ if st.session_state['batch_results'] is not None:
             csv = display_df.to_csv(index=False).encode('utf-8-sig')
             ex3.download_button("Excel/CSV Export", data=csv, file_name=f"SET100_Data_{datetime.now(SET_TZ).strftime('%Y%m%d_%H%M')}.csv", mime="text/csv", use_container_width=True)
 
-        with main_tabs[4]: # SILENT ACCUM Insight
+        with main_tabs[5]: # SILENT ACCUM Insight
             st.info("💎 เจาะลึกพฤติกรรมหุ้น SILENT ACCUM: วัดระยะเวลาการฟื้นตัวและโอกาสชนะ")
             st.caption("📈 **Feature Insight:** วิเคราะห์สถิติย้อนหลังของสัญญาณ SILENT ACCUM เพื่อหาค่าเฉลี่ยจำนวนวันที่ราคามักจะ 'ระเบิด' (Days to Move) และอัตราการชนะ (Win Rate) ภายใน 5 วัน")
             
@@ -2426,7 +2556,7 @@ if st.session_state['batch_results'] is not None:
                 st.warning("ยังไม่มีข้อมูล SILENT ACCUM เพียงพอสำหรับการวิเคราะห์")
 
 
-        with main_tabs[5]: # Market Scan Results (Hybrid)
+        with main_tabs[6]: # Market Scan Results (Hybrid)
             st.info("📊 Market Scan Results (SET100)")
             st.caption("🕒 **Hybrid View:** แสดงผลการวิเคราะห์ล่าสุดของหุ้นแต่ละตัว โดยรวมข้อมูลจากทั้งการสแกนอัตโนมัติ (Auto) และการสแกนด้วยตนเอง (Manual)")
             
@@ -2678,7 +2808,7 @@ if st.session_state['batch_results'] is not None:
             else:
                 st.info("ℹ️ ยังไม่มีข้อมูลการสแกนในระบบ (กรุณากด Run SET100 Batch Scan หรือรอระบบ Auto Scan)")
 
-        with main_tabs[6]: # Advanced Tools / More Features
+        with main_tabs[7]: # Advanced Tools / More Features
             st.info("🛠️ Advanced Tools & Strategy Builder")
             st.caption("⚙️ **Advanced Features:** รวมเครื่องมือวิเคราะห์เชิงลึก เช่น การปรับจูน Parameter ด้วย AI, ระบบทดสอบย้อนหลัง (Backtest) และห้องทดลองรูปแบบราคา (Pattern Lab)")
             
