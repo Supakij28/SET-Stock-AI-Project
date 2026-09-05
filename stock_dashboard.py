@@ -36,41 +36,6 @@ load_dotenv()
 SET_TZ = pytz.timezone('Asia/Bangkok')
 st.set_page_config(page_title="Quant Strategy Station", layout="wide")
 
-# --- Password Protection ---
-def check_password():
-    # 1. ถ้าผ่านการล็อกอินอยู่แล้ว ให้ให้ผ่านทันที
-    if st.session_state.get("password_correct", False):
-        return True
-
-    # 2. ฟังก์ชันตรวจสอบเมื่อมีการกด Enter/ส่งข้อมูลในช่องรหัสผ่าน
-    def password_entered():
-        user_input = str(st.session_state.get("password_input", "")).strip()
-        target_password = str(st.secrets.get("APP_PASSWORD", os.getenv("APP_PASSWORD", "admin1234"))).strip()
-        
-        if user_input == target_password:
-            st.session_state["password_correct"] = True
-            st.session_state["password_error"] = False
-        else:
-            st.session_state["password_correct"] = False
-            st.session_state["password_error"] = True
-
-    # 3. แสดงฟอร์มกรอกรหัสผ่าน
-    st.text_input(
-        "Please enter the access password",
-        type="password",
-        on_change=password_entered,
-        key="password_input"
-    )
-    
-    # 4. แสดง Error Message เฉพาะกรณีที่พิมพ์ผิดจริงๆ เท่านั้น
-    if st.session_state.get("password_error", False):
-        st.error("😕 Password incorrect")
-        
-    return False
-
-if not check_password():
-    st.stop()
-
 # --- Database Integration (Supabase) ---
 def get_supabase_client() -> Client:
     """Initialize Supabase client from Streamlit secrets or environment variables."""
@@ -96,7 +61,47 @@ def get_supabase_client() -> Client:
         
     return create_client(url, key)
 
-supabase = get_supabase_client()
+# --- Initialization & Authentication Flow ---
+# Wrap system initialization in a spinner and delay Auth UI
+with st.spinner("Initializing system, please wait..."):
+    # 1. Initialize Database Connection
+    supabase = get_supabase_client()
+    
+    # 2. Define Authentication Logic
+    def check_password():
+        # 1. ถ้าผ่านการล็อกอินอยู่แล้ว ให้ให้ผ่านทันที
+        if st.session_state.get("password_correct", False):
+            return True
+
+        # 2. ฟังก์ชันตรวจสอบเมื่อมีการกด Enter/ส่งข้อมูลในช่องรหัสผ่าน
+        def password_entered():
+            user_input = str(st.session_state.get("password_input", "")).strip()
+            target_password = str(st.secrets.get("APP_PASSWORD", os.getenv("APP_PASSWORD", "admin1234"))).strip()
+            
+            if user_input == target_password:
+                st.session_state["password_correct"] = True
+                st.session_state["password_error"] = False
+            else:
+                st.session_state["password_correct"] = False
+                st.session_state["password_error"] = True
+
+        # 3. แสดงฟอร์มกรอกรหัสผ่าน
+        st.text_input(
+            "Please enter the access password",
+            type="password",
+            on_change=password_entered,
+            key="password_input"
+        )
+        
+        # 4. แสดง Error Message เฉพาะกรณีที่พิมพ์ผิดจริงๆ เท่านั้น
+        if st.session_state.get("password_error", False):
+            st.error("😕 Password incorrect")
+            
+        return False
+
+# 3. Block main app rendering until authenticated
+if not check_password():
+    st.stop()
 
 def init_db():
     """Verify Supabase connection."""
