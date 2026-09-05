@@ -2004,1022 +2004,1039 @@ main_tabs = st.tabs([
 ])
 
 with main_tabs[0]: # Smart Pattern Radar
-    st.info("🎯 Smart Pattern Radar: ค้นหาหุ้น Pre-Breakout ที่มีความแม่นยำสูง (Conviction >= 70)")
-    
-    # 1. Selection Logic & Filtering
-    regime, _ = get_market_regime()
-    perf_stats = get_radar_performance_stats(supabase)
-    
-    # Fetch latest standardized results
-    df_all = fetch_market_scan_results()
-    
-    if not df_all.empty:
-        # Filter: Conviction Score >= 70, Rel Vol >= 1.2, Positive Signals
-        # Note: relative_vol is nullable in some cases, handle carefully
-        df_radar = df_all[
-            (df_all['score'] >= 70) & 
-            ((df_all['relative_vol'] >= 1.2) | (df_all['relative_vol'].isna())) &
-            (df_all['signal'].isin(['BUY', 'GOLDEN BUY', 'PRE-FLY', 'SILENT ACCUM', 'BREAKOUT']))
-        ].copy()
+    try:
+        st.info("🎯 Smart Pattern Radar: ค้นหาหุ้น Pre-Breakout ที่มีความแม่นยำสูง (Conviction >= 70)")
         
-        # 2. Historical Outcome Verification
-        def get_win_rate(sig):
-            sig_cat = 'BUY / BREAKOUT' if 'BUY' in str(sig).upper() or 'BREAKOUT' in str(sig).upper() else \
-                      'SILENT ACCUM' if 'SILENT' in str(sig).upper() else 'OTHER'
-            stats = perf_stats.get(sig_cat, {})
-            return stats.get('Win_Rate', 0), stats.get('Avg_Return', 0)
-
-        if not df_radar.empty:
-            df_radar['Win_Rate'], df_radar['Avg_Return'] = zip(*df_radar['signal'].apply(get_win_rate))
-            
-            # Risk/Reward calculation (Entry/SL/Target)
-            # Default R:R 1:2
-            df_radar['RR_Ratio'] = "1:2.0"
-            
-            # Display Table
-            st.subheader("🔥 Top Pre-Breakout Candidates")
-            display_cols = ['ticker', 'signal', 'bull_score', 'score', 'Win_Rate', 'Avg_Return', 'RR_Ratio', 'close_price']
-            st.dataframe(
-                df_radar[display_cols].rename(columns={
-                    'ticker': 'Ticker', 'signal': 'Signal', 'bull_score': 'DTW Match',
-                    'score': 'Conviction', 'Win_Rate': 'Win Rate (%)', 'Avg_Return': 'Avg Ret (%)',
-                    'RR_Ratio': 'R:R Ratio', 'close_price': 'Price'
-                }),
-                use_container_width=True
-            )
-            
-            # 3. Interactive Chart & Levels
-            st.divider()
-            selected_ticker = st.selectbox("เลือกหุ้นเพื่อดูแผนเทรด (Trade Plan):", df_radar['ticker'].unique(), key="radar_ticker")
-            
-            if selected_ticker:
-                ticker_row = df_radar[df_radar['ticker'] == selected_ticker].iloc[0]
-                entry_price = ticker_row['close_price']
-                
-                # Fetch price data for ATR and Chart
-                df_chart = get_stock_data(selected_ticker)
-                if df_chart is not None and not df_chart.empty:
-                    df_chart = calculate_quant_indicators(df_chart)
-                    atr = df_chart['ATR'].iloc[-1]
-                    
-                    # Plan Levels
-                    stop_loss = entry_price - (atr * 2)
-                    risk = entry_price - stop_loss
-                    target = entry_price + (risk * 2)
-                    
-                    # Layout Metrics
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("Entry Price", f"{entry_price:.2f}")
-                    m2.metric("Stop Loss (2*ATR)", f"{stop_loss:.2f}", delta=f"{(stop_loss/entry_price-1)*100:.1f}%", delta_color="inverse")
-                    m3.metric("Target Price (R:R 1:2)", f"{target:.2f}", delta=f"{(target/entry_price-1)*100:.1f}%")
-                    
-                    # Plotly Chart
-                    fig = go.Figure()
-                    fig.add_trace(go.Candlestick(
-                        x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
-                        low=df_chart['Low'], close=df_chart['Close'], name="Price"
-                    ))
-                    
-                    # Add Plan Lines
-                    fig.add_hline(y=entry_price, line_dash="dash", line_color="blue", annotation_text="Entry")
-                    fig.add_hline(y=stop_loss, line_dash="dash", line_color="red", annotation_text="Stop Loss")
-                    fig.add_hline(y=target, line_dash="dash", line_color="green", annotation_text="Target (1:2)")
-                    
-                    fig.update_layout(title=f"Trade Plan: {selected_ticker}", height=600, template="plotly_dark")
-                    st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("ยังไม่พบหุ้นที่มีสัญญาณ Pre-Breakout คุณภาพสูงในขณะนี้ (Conviction < 70)")
-    else:
-        st.warning("ไม่สามารถโหลดข้อมูลการสแกนล่าสุดได้")
+        # 1. Selection Logic & Filtering
+        regime, _ = get_market_regime()
+        perf_stats = get_radar_performance_stats(supabase)
         
-        with main_tabs[1]: # Unified Report
-            if not is_hist:
-                st.info("สรุปผลการวิเคราะห์เชิงปริมาณ (Search + Analyze + Persistence + Backtest)")
-                st.caption("🔍 **ระบบคัดกรองอัจฉริยะ:** รวม 3 กลยุทธ์ใหม่ (1) **Volume Compression** ตรวจจับวอลุ่มแห้งก่อนระเบิด (2) **Sector Flow Filter** คัดเฉพาะหุ้นที่แข็งแกร่งกว่ากลุ่ม (SRS) และ (3) **Dynamic Stop Loss** ปรับตามความผันผวนจริง (ATR)")
-                unified_df = generate_unified_report(batch_df, regime)
-                
-                if not unified_df.empty:
-                    # Sorting: High Conviction first, then positive signals
-                    high_strength = unified_df[unified_df['Conviction_Score'] >= 40].copy()
-                    pos_signals = ['BUY', 'GOLDEN BUY', 'PRE-FLY', 'PIN BAR (SUPPORT)', 'SILENT ACCUM']
-                    early_birds = unified_df[(unified_df['Conviction_Score'] < 40) & (unified_df['Signal'].isin(pos_signals))].copy()
-                    top_conviction = pd.concat([high_strength, early_birds]).head(20)
-                    
-                    if not top_conviction.empty:
-                        st.success(f"🔥 พบหุ้นน่าสนใจ {len(top_conviction)} ตัว (จัดลำดับตามคะแนนและความมั่นใจ)")
-                        
-                        for idx, (i, row) in enumerate(top_conviction.iterrows()):
-                            is_early_bird = row['Conviction_Score'] < 40
-                            
-                            # Dot & Label Logic
-                            if is_early_bird:
-                                dot_color = "#10b981" # Emerald
-                                s_label = "EARLY ENTRY"
-                            else:
-                                dot_color = "#3b82f6" if "SWING" in row['Strategy'] else "#f59e0b"
-                                s_label = row['Strategy']
-
-                            # Signal Styling
-                            sig_val = row['Signal']
-                            sig_bg = "#f3f4f6"; sig_fg = "#4b5563"; sig_border = "none"
-                            if sig_val in ['BUY', 'GOLDEN BUY', 'PRE-FLY']: sig_bg = "#dcfce7"; sig_fg = "#166534"
-                            elif sig_val == 'REJECTION WICK': sig_bg = "#111827"; sig_fg = "#ffffff"
-                            elif sig_val == 'SILENT ACCUM': sig_bg = "#ecfdf5"; sig_fg = "#065f46"
-                            elif sig_val == 'CONFLICT (HIGH RISK)': sig_bg = "#fee2e2"; sig_fg = "#991b1b"
-                            elif sig_val == 'PIN BAR (SUPPORT)': sig_bg = "#dcfce7"; sig_fg = "#166534"; sig_border = "1px solid #166534"
-                            
-                            # Card Content
-                            intraday_html = ""
-                            if 'Intraday_History' in row and row['Intraday_History']:
-                                past_sigs = ", ".join(row['Intraday_History'])
-                                intraday_html = f'<div class="intraday-alert" style="font-size: 0.65rem; color: #f59e0b; margin-bottom: 4px;">⚡ <b>Intraday:</b> {past_sigs}</div>'
-
-                            # Build card HTML
-                            srs_val = row.get('Sector_RS', 0)
-                            srs_color = "#166534" if srs_val > 0 else ("#991b1b" if srs_val < 0 else "#4b5563")
-                            stop_loss = row.get('Stop_Loss', 0)
-                            pat_consensus = row.get('Pattern Consensus (%)', 0)
-                            
-                            card_html = f'<div class="compact-card"><div class="card-header"><div class="header-left"><div class="dot-indicator" style="background-color: {dot_color};"></div><div class="ticker-name">{row["Ticker"]}</div></div><div class="status-pill">{s_label}</div></div>{intraday_html}<div class="score-container"><div class="score-label">Score</div><div class="score-big">{row["Conviction_Score"]}</div></div><div class="signal-badge" style="background-color: {sig_bg}; color: {sig_fg}; border: {sig_border};">{sig_val}</div><div class="stats-grid"><div class="stat-item"><div class="stat-lbl">SECTOR RS</div><div class="stat-val" style="color: {srs_color}; font-weight: 700;">{srs_val:+.1f}%</div></div><div class="stat-item"><div class="stat-lbl">STOP LOSS</div><div class="stat-val" style="color: #991b1b;">{stop_loss:.2f}</div></div><div class="stat-item"><div class="stat-lbl">PATTERN</div><div class="stat-val">{pat_consensus:.1f}%</div></div></div></div>'
-                            # Clean HTML indentation and render
-                            clean_card_html = textwrap.dedent(card_html).strip()
-                            st.markdown(clean_card_html, unsafe_allow_html=True)
-                            
-                            with st.expander(f"Details: {row['Ticker']}", expanded=False):
-                                st.write(f"✅ {row['Why']}")
-                                if row['Warnings']: st.warning(row['Warnings'])
-                                if user_api_key:
-                                    if st.button(f"AI Plan: {row['Ticker']}", key=f"tab_unified_btn_{row['Ticker']}"):
-                                        st.markdown(generate_ai_trading_plan(row['Ticker'], batch_df[batch_df['Ticker']==row['Ticker']].iloc[0], user_api_key))
-                        
-                        st.divider()
-                        st.subheader("📋 ตารางสรุปรวม (Summary Table)")
-                        # Safe Column Selection
-                        u_cols = {
-                            'Ticker': 'Ticker', 
-                            'Conviction_Score': 'Score', 
-                            'Signal': 'Signal', 
-                            'Strategy': 'Strategy', 
-                            'Sector_RS': 'Sector RS', 
-                            'Stop_Loss': 'Stop Loss', 
-                            'Similarity': 'Pattern'
-                        }
-                        unified_summary = top_conviction[[c for c in u_cols.keys() if c in top_conviction.columns]].copy()
-                        unified_summary.rename(columns=u_cols, inplace=True)
-                        st.dataframe(unified_summary, use_container_width=True)
-                    
-                    with st.expander("🔍 View All Unified Candidates", expanded=False):
-                        st.dataframe(unified_df, use_container_width=True)
-                else:
-                    st.info("ℹ️ ไม่พบหุ้นที่เข้าเกณฑ์ Unified")
+        # Fetch latest standardized results
+        df_all = fetch_market_scan_results()
         
-        with main_tabs[2]: # Bottom Fishing
-            st.info("💎 หุ้นที่ Oversold และเริ่มมีสัญญาณกลับตัว (Bottom Fishing)")
-            st.caption("🎯 **Feature Insight:** ค้นหาหุ้นที่มี RSI ต่ำกว่า 35 และเริ่มมีแรงซื้อกลับ (RSI Turning Up) พร้อม Candlestick รูปแบบ Bullish Pin Bar เพื่อหาจังหวะต้นเทรนด์")
+        if not df_all.empty:
+            # 1st Priority: Conviction Score >= 70
+            df_radar = df_all[
+                (df_all['score'] >= 70) & 
+                ((df_all['relative_vol'] >= 1.2) | (df_all['relative_vol'].isna())) &
+                (df_all['signal'].isin(['BUY', 'GOLDEN BUY', 'PRE-FLY', 'SILENT ACCUM', 'BREAKOUT']))
+            ].copy()
             
-            # [HYBRID MANDATE] Use latest results from both sources
-            hybrid_results = fetch_market_scan_results()
+            # 2nd Priority (Fallback): Top 10 stocks with Conviction Score >= 50
+            if df_radar.empty:
+                df_radar = df_all[
+                    (df_all['score'] >= 50) & 
+                    (df_all['signal'].isin(['BUY', 'GOLDEN BUY', 'PRE-FLY', 'SILENT ACCUM', 'BREAKOUT']))
+                ].sort_values('score', ascending=False).head(10).copy()
+                if not df_radar.empty:
+                    st.info("💡 Fallback Mode: แสดงหุ้น Top 10 ที่มีคะแนนความเชื่อมั่นสูงสุด (Conviction >= 50)")
             
-            if not hybrid_results.empty:
-                # 1. Filtering for Oversold
-                hybrid_results['rsi'] = pd.to_numeric(hybrid_results['rsi'], errors='coerce')
-                oversold_df = hybrid_results[hybrid_results['rsi'] <= 35].copy()
-                
-                if not oversold_df.empty:
-                    oversold_df = oversold_df.sort_values('rsi', ascending=True)
-                    st.success(f"🎯 พบหุ้น Oversold (RSI <= 35) จำนวน {len(oversold_df)} ตัว")
-                    
-                    # Display cards
-                    for idx, row in oversold_df.iterrows():
-                        r_dot_color = "#8b5cf6" 
-                        r_sig_bg = "#f5f3ff"; r_sig_fg = "#5b21b6"
-                        
-                        # Build dynamic reasons based on available data
-                        reasons = []
-                        if row['rsi'] < 30: reasons.append("Extreme Oversold (RSI < 30)")
-                        elif row['rsi'] <= 35: reasons.append("Oversold Zone (RSI <= 35)")
-                        if row.get('is_pinbar'): reasons.append("Bullish Pin Bar Detected")
-                        if row.get('signal') == 'BUY': reasons.append("Positive Buy Signal")
-                        
-                        reasons_html = "".join([f'<div style="font-size: 0.75rem; color: #5b21b6; margin-bottom: 2px;">• {reason}</div>' for reason in reasons])
-                        
-                        # Card Content
-                        r_card_html = f"""
-                        <div class="compact-card">
-                            <div class="card-header">
-                                <div class="header-left">
-                                    <div class="dot-indicator" style="background-color: {r_dot_color};"></div>
-                                    <div class="ticker-name">{row['ticker']}</div>
-                                </div>
-                                <div class="status-pill recovery">OVERSOLD</div>
-                            </div>
-                            <div class="score-container">
-                                <div class="score-label">Score</div>
-                                <div class="score-big">{int(row['score']) if pd.notna(row['score']) else 0}</div>
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 4px;">
-                                <div class="signal-badge" style="background-color: {r_sig_bg}; color: {r_sig_fg};">RSI: {row['rsi']:.1f}</div>
-                                <div style="font-size: 0.75rem; font-weight: 600; color: #7c3aed;">Signal: {row['signal']}</div>
-                                <div style="font-size: 0.75rem; font-weight: 600; color: #4b5563;">Strategy: {row['strategy'] if row['strategy'] else 'N/A'}</div>
-                            </div>
-                            <div style="margin-top: 10px; padding: 6px; background-color: #fdfcff; border-radius: 8px; border: 1px dashed #ddd6fe;">
-                                {reasons_html}
-                            </div>
-                            <div class="stats-grid">
-                                <div class="stat-item"><div class="stat-lbl">RSI</div><div class="stat-val">{row['rsi']:.1f}</div></div>
-                                <div class="stat-item"><div class="stat-lbl">PRICE</div><div class="stat-val">{row['close_price']:.2f}</div></div>
-                                <div class="stat-item"><div class="stat-lbl">PIN BAR</div><div class="stat-val">{'✅' if row.get('is_pinbar') else '❌'}</div></div>
-                            </div>
-                        </div>
-                        """
-                        # Clean HTML indentation and render
-                        clean_r_card_html = textwrap.dedent(r_card_html).strip()
-                        st.markdown(clean_r_card_html, unsafe_allow_html=True)
-                        
-                        with st.expander(f"Analysis: {row['ticker']}"):
-                            st.write(f"🔍 **เหตุผลที่ติดโผ:** {', '.join(reasons)}")
-                            if user_api_key:
-                                if st.button(f"Oversold AI Plan: {row['ticker']}", key=f"tab_oversold_btn_{row['ticker']}"):
-                                    dummy_row = {'Last Price': row['close_price'], 'Signal': row['signal'], 'Bullish Score (%)': row['score'], 'Bearish Score (%)': 0, 'Score Diff': row['score'], 'MTF Conf': 'N/A', 'MTF Score': 0, 'Relative Vol': 1.0, 'Pattern Consensus (%)': 50}
-                                    st.markdown(generate_ai_trading_plan(row['ticker'], dummy_row, user_api_key))
-                    
-                    st.divider()
-                    st.subheader("📋 ตารางสรุปหุ้น Oversold (Summary Table)")
-                    summary_cols = ['ticker', 'rsi', 'close_price', 'signal', 'strategy', 'source', 'scanned_at']
-                    st.dataframe(oversold_df[summary_cols].rename(columns={
-                        'ticker': 'Ticker',
-                        'rsi': 'RSI',
-                        'close_price': 'Price',
-                        'signal': 'Signal',
-                        'strategy': 'Strategy',
-                        'source': 'Source',
-                        'scanned_at': 'Scanned At'
-                    }), use_container_width=True)
-                else:
-                    st.info("ℹ️ ยังไม่พบหุ้น Oversold (RSI <= 35)")
-            else:
-                st.info("ℹ️ ยังไม่มีข้อมูลการสแกนในระบบ (กรุณากด Run SET100 Batch Scan หรือรอระบบ Auto Scan)")
-        
-        with main_tabs[3]: # Market Breadth
-            st.subheader(f"📊 Market Breadth: หุ้นบวก {pos_count} | หุ้นลบ {neg_count}")
-            st.caption("📈 **Market Breadth:** สรุปภาพรวมความแข็งแกร่งของตลาด SET100 ผ่านจำนวนหุ้นที่บวกและลบ เพื่อดูทิศทางกระแสเงินทุน (Money Flow)")
-            
-            # --- SIGNALS BY CATEGORY ---
-            if 'Signal' in batch_df.columns:
-                st.divider()
-                st.markdown("### 📊 Signals by Category")
-                st.caption("🌐 **Sector Relative Strength (SRS):** วิเคราะห์เปรียบเทียบหุ้นกับค่าเฉลี่ยของกลุ่มอุตสาหกรรม เพื่อหาหุ้นที่ 'แข็งแกร่งกว่าตลาด' (Outperformer)")
-                sig_counts = batch_df['Signal'].value_counts().reset_index()
-                sig_counts.columns = ['Signal', 'Count']
-                
-                # Use small columns for a compact overview
-                num_cols = min(len(sig_counts), 6)
-                s_cols = st.columns(num_cols)
-                for i, (_, s_row) in enumerate(sig_counts.iterrows()):
-                    s_cols[i % num_cols].metric(s_row['Signal'], s_row['Count'])
-                
-                st.dataframe(sig_counts, use_container_width=True)
-                
-                # --- SILENT ACCUM CLUSTER DETECTION ---
-                sa_count = sig_counts[sig_counts['Signal'] == 'SILENT ACCUM']['Count'].values[0] if 'SILENT ACCUM' in sig_counts['Signal'].values else 0
-                if sa_count >= 3:
-                    st.info(f"🔵 **Smart Money Accumulation Cluster Detected!**  \nพบหุ้น SET100 ติดสัญญาณ `SILENT ACCUM` พร้อมกัน **{sa_count} ตัว**  \n*แนวโน้ม: ตลาดมีโอกาสเกิด Reversal ขาขึ้นในระยะสั้น (Confidence: High)*")
-                    st.caption("💡 **Feature Insight:** ระบบตรวจพบการเก็บของพร้อมกันในหลายตัว (Cluster) ซึ่งเป็นสัญญาณบ่งชี้ Market Breadth ว่าเงินทุนกำลังไหลเข้าสะสมหุ้นในกลุ่ม SET100")
+            # 2. Historical Outcome Verification
+            def get_win_rate(sig):
+                sig_cat = 'BUY / BREAKOUT' if 'BUY' in str(sig).upper() or 'BREAKOUT' in str(sig).upper() else \
+                          'SILENT ACCUM' if 'SILENT' in str(sig).upper() else 'OTHER'
+                stats = perf_stats.get(sig_cat, {})
+                return stats.get('Win_Rate', 0), stats.get('Avg_Return', 0)
 
-        with main_tabs[4]: # Admin & History
-            st.subheader("🏆 Leaderboard & History (Supabase)")
-            st.caption("📜 **Data Persistence:** ดึงข้อมูลประวัติการสแกนและผลแพ้ชนะ (Win/Loss) ย้อนหลังโดยตรงจากฐานข้อมูล Cloud (Supabase)")
-            # Sorting desired columns to the front
-            cols = batch_df.columns.tolist()
-            desired_order = ["Ticker", "Signal", "Pattern Consensus (%)", "Last Price", "Day High"]
-            actual_order = [c for c in desired_order if c in batch_df.columns]
-            display_df = batch_df[actual_order + [c for c in cols if c not in actual_order]]
-            
-            with st.expander("🔍 View Scanner Leaderboard (Table)", expanded=True):
-                st.dataframe(display_df, use_container_width=True)
-            
-            st.divider()
-            st.subheader("📜 Database & Labeling")
-            
-            l1, l2 = st.columns([1, 2])
-            if l1.button("🏷️ Run Automated Labeling", use_container_width=True):
-                with st.spinner("Updating labels..."):
-                    count = run_automated_labeling()
-                    st.success(f"Updated {count} records!") if count > 0 else st.info("No new records to label.")
-
-            with st.expander("View Saved Scan History", expanded=False):
-                if supabase:
-                    try:
-                        response = supabase.table("scan_results") \
-                            .select("*") \
-                            .order("id", desc=True) \
-                            .limit(500) \
-                            .execute()
-                        history_df = pd.DataFrame(response.data)
-                        
-                        if not history_df.empty:
-                            def style_outcome(val):
-                                if val == 'Win': return 'color: green; font-weight: bold'
-                                if val == 'Loss': return 'color: red'
-                                return ''
-                            st.dataframe(history_df.style.map(style_outcome, subset=['outcome_label']), use_container_width=True)
-                        
-                        st.write("### 📊 Quick Insights from DB")
-                        c1, c2, c3 = st.columns(3)
-                        # Load labeled data for metrics
-                        labeled_df = pd.DataFrame()
-                        try:
-                            l_resp = supabase.table("scan_results").select("*").not_.is_("outcome_label", "null").execute()
-                            labeled_df = pd.DataFrame(l_resp.data)
-                        except: pass
-                        
-                        if not labeled_df.empty:
-                            win_rate = (len(labeled_df[labeled_df['outcome_label'] == 'Win']) / len(labeled_df)) * 100
-                            c2.metric("Win Rate (Labeled)", f"{win_rate:.1f}%")
-                        
-                        unique_tickers = history_df['ticker'].unique()
-                        selected_h_ticker = c3.selectbox("Select Ticker for Score Trend", unique_tickers, key="hist_ticker_select")
-                        if selected_h_ticker:
-                            ticker_history = history_df[history_df['ticker'] == selected_h_ticker].sort_values('id')
-                            c3.line_chart(ticker_history.set_index('scan_date')['bull_score'])
-                    except Exception as e:
-                        st.error(f"Error loading history: {e}")
-            
-            st.divider()
-            st.subheader("📤 Export & Printing Tools")
-            ex1, ex2, ex3 = st.columns(3)
-            
-            # Formatting and Styling for Export
-            def style_batch(styler):
-                def highlight_best(row):
-                    styles = [''] * len(row)
-                    if 'BUY' in str(row['Signal']): styles = ['background-color: rgba(34, 197, 94, 0.2)'] * len(row)
-                    elif row['Bearish Score (%)'] > 85: styles = ['background-color: rgba(239, 68, 68, 0.2)'] * len(row)
-                    return styles
-                styler.apply(highlight_best, axis=1)
-                styler.map(lambda x: 'color: lime; font-weight: bold' if 'BUY' in str(x) else ('color: red; font-weight: bold' if x == 'SELL' else 'color: gray'), subset=['Signal'])
-                styler.format({'Last Price': '{:.2f}', '% Change': '{:+.2f}%', 'Relative Vol': '{:.2f}x', 'MTF Score': '{:.0f}', 'Pattern Consensus (%)': '{:.1f}%', 'Bullish Score (%)': '{:.1f}%', 'Bearish Score (%)': '{:.1f}%', 'Score Diff': '{:.1f}'})
-                return styler
-
-            styled_export = style_batch(display_df.style)
-            html_buffer = styled_export.to_html()
-            
-            ex1.checkbox("📸 Full-Length View (For PDF)", key="admin_full_view")
-            
-            full_html = f"<html><body><h2>🏆 SET100 Quant Report</h2>{html_buffer}</body></html>"
-            ex2.download_button("📄 Download HTML Report", data=full_html, file_name=f"SET100_Report_{datetime.now(SET_TZ).strftime('%Y%m%d_%H%M')}.html", mime="text/html", use_container_width=True)
-            
-            csv = display_df.to_csv(index=False).encode('utf-8-sig')
-            ex3.download_button("Excel/CSV Export", data=csv, file_name=f"SET100_Data_{datetime.now(SET_TZ).strftime('%Y%m%d_%H%M')}.csv", mime="text/csv", use_container_width=True)
-
-        with main_tabs[5]: # SILENT ACCUM Insight
-            st.info("💎 เจาะลึกพฤติกรรมหุ้น SILENT ACCUM: วัดระยะเวลาการฟื้นตัวและโอกาสชนะ")
-            st.caption("📈 **Feature Insight:** วิเคราะห์สถิติย้อนหลังของสัญญาณ SILENT ACCUM เพื่อหาค่าเฉลี่ยจำนวนวันที่ราคามักจะ 'ระเบิด' (Days to Move) และอัตราการชนะ (Win Rate) ภายใน 5 วัน")
-            
-            # 0. Display Control
-            row_limit = st.slider("จำนวนรายการที่แสดงผลล่าสุด", min_value=10, max_value=200, value=30, step=10, key="sa_row_limit")
-            
-            sa_data = get_silent_accum_insights(limit=row_limit)
-            
-            if sa_data is not None and not sa_data.empty:
-                # 1. Overview Metrics
-                # Only calculate metrics for rows that have days_to_move (historical)
-                hist_sa = sa_data[sa_data['days_to_move'].notna()]
+            if not df_radar.empty:
+                df_radar['Win_Rate'], df_radar['Avg_Return'] = zip(*df_radar['signal'].apply(get_win_rate))
                 
-                if not hist_sa.empty:
-                    avg_days = hist_sa['days_to_move'].mean()
-                    win_rate_t5 = (hist_sa['win_t5'].sum() / len(hist_sa)) * 100
-                else:
-                    avg_days = 0
-                    win_rate_t5 = 0
-                    
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Avg. Days to Move", f"{avg_days:.1f} Days")
-                m2.metric("Win Rate (T+5)", f"{win_rate_t5:.1f}%")
-                m3.metric("Sample Size", f"{len(sa_data)} Signals")
+                # Risk/Reward calculation (Entry/SL/Target)
+                df_radar['RR_Ratio'] = "1:2.0"
                 
-                # 2. Distribution Chart
-                st.write("### 📊 Distribution of Days to Move (+1% Upside)")
-                dist_df = sa_data['days_to_move'].value_counts().sort_index().reset_index()
-                dist_df.columns = ['Days', 'Frequency']
-                
-                fig_sa = go.Figure(go.Bar(
-                    x=dist_df['Days'], y=dist_df['Frequency'],
-                    text=dist_df['Frequency'], textposition='auto',
-                    marker=dict(color='#10b981')
-                ))
-                fig_sa.update_layout(height=350, margin=dict(t=20, b=20, l=20, r=20), xaxis_title="Trading Days", yaxis_title="Number of Cases")
-                st.plotly_chart(fig_sa, use_container_width=True)
-                
-                # 3. Recent Cases
-                st.write(f"### 📜 Recent SILENT ACCUM Cases (Top {row_limit})")
+                # Display Table
+                st.subheader("🔥 Top Pre-Breakout Candidates")
+                # Safe Column Selection
+                radar_cols = {
+                    'ticker': 'Ticker', 
+                    'signal': 'Signal', 
+                    'bull_score': 'DTW Match',
+                    'score': 'Conviction', 
+                    'Win_Rate': 'Win Rate (%)', 
+                    'Avg_Return': 'Avg Ret (%)',
+                    'RR_Ratio': 'R:R Ratio', 
+                    'close_price': 'Price'
+                }
+                display_cols = [c for c in radar_cols.keys() if c in df_radar.columns]
                 st.dataframe(
-                    sa_data[['ticker', 'signal_date', 'score', 'days_to_move', 'max_gain_t5']]
-                    .style.format({
-                        'max_gain_t5': '{:.2f}%',
-                        'days_to_move': '{:.0f}',
-                        'score': '{:.1f}'
-                    }, na_rep='Pending'), 
+                    df_radar[display_cols].rename(columns=radar_cols),
                     use_container_width=True
                 )
-
+                
+                # 3. Interactive Chart & Levels
                 st.divider()
-                # 4. Single Ticker Analysis
-                st.divider()
-                st.write("### 🔍 SILENT ACCUM Single Ticker Analysis")
+                selected_ticker = st.selectbox("เลือกหุ้นเพื่อดูแผนเทรด (Trade Plan):", df_radar['ticker'].unique(), key="radar_ticker")
                 
-                # Fetch all unique tickers that have SILENT ACCUM signals to populate selectbox
-                all_sa_tickers = []
-                if sa_data is not None and not sa_data.empty:
-                    all_sa_tickers = sorted(sa_data['ticker'].unique().tolist())
-                
-                sel_sa_ticker = st.selectbox("เลือกหุ้นเพื่อดูประวัติ SILENT ACCUM รายตัว", all_sa_tickers, key="sa_ticker_select_new")
-                
-                if sel_sa_ticker:
-                    # Fetch full historical analysis for THIS specific ticker (Intraday Timeline)
-                    with st.spinner(f"กำลังวิเคราะห์ประวัติ SILENT ACCUM สำหรับ {sel_sa_ticker}..."):
-                        # [INTRADAY TIMELINE] Set deduplicate=False to see all signals for this ticker
-                        ticker_sa = get_silent_accum_insights(limit=None, ticker_filter=sel_sa_ticker, deduplicate=False)
+                if selected_ticker:
+                    ticker_row = df_radar[df_radar['ticker'] == selected_ticker].iloc[0]
+                    entry_price = ticker_row['close_price']
                     
-                    if ticker_sa is not None and not ticker_sa.empty:
-                        # 1. Price Chart with SILENT ACCUM Markers (Full Width)
-                        st.write(f"**Price Chart with SILENT ACCUM Markers: {sel_sa_ticker}**")
-                        # ... (Rest of the chart logic stays same as it uses normalized dates for markers)
-                        # ...
-                        # (I will keep the chart code as it was in my previous successful edit)
-                        with st.spinner(f"ดึงข้อมูลกราฟสำหรับ {sel_sa_ticker}..."):
-                            hist_price_raw = get_stock_data(sel_sa_ticker)
-                            
-                            if hist_price_raw is not None and not hist_price_raw.empty:
-                                # Standardize for plotting (Last 180 days)
-                                df_plot = hist_price_raw.tail(180).copy()
-                                # Ensure index is naive datetime for Plotly and marker alignment
-                                if df_plot.index.tz is not None:
-                                    df_plot.index = df_plot.index.tz_convert(SET_TZ).tz_localize(None)
-                                
-                                # 1. Create Subplots: Price (Candlestick) + Volume
-                                fig = make_subplots(
-                                    rows=2, cols=1, 
-                                    shared_xaxes=True, 
-                                    vertical_spacing=0.05, 
-                                    row_heights=[0.7, 0.3]
-                                )
-                                
-                                # Candlestick
-                                fig.add_trace(go.Candlestick(
-                                    x=df_plot.index, 
-                                    open=df_plot['Open'], 
-                                    high=df_plot['High'], 
-                                    low=df_plot['Low'], 
-                                    close=df_plot['Close'], 
-                                    name='Price'
-                                ), row=1, col=1)
-                                
-                                # Volume
-                                fig.add_trace(go.Bar(
-                                    x=df_plot.index, 
-                                    y=df_plot['Volume'], 
-                                    name='Volume', 
-                                    marker_color='rgba(100, 100, 100, 0.5)'
-                                ), row=2, col=1)
-                                
-                                # 2. Add SILENT ACCUM Markers (Pin to Low Price)
-                                # Alignment: Convert signal dates to naive date objects for comparison
-                                sig_dates = pd.to_datetime(ticker_sa['signal_date']).dt.date.unique().tolist()
-                                df_plot_dates = df_plot.index.date
-                                
-                                # Filter rows in df_plot that match a signal date
-                                marker_mask = [d in sig_dates for d in df_plot_dates]
-                                markers = df_plot[marker_mask].copy()
-                                
-                                if not markers.empty:
-                                    fig.add_trace(go.Scatter(
-                                        x=markers.index, 
-                                        y=markers['Low'] * 0.98, 
-                                        mode='markers', 
-                                        marker=dict(
-                                            symbol='triangle-up', 
-                                            size=15, 
-                                            color='#3b82f6', 
-                                            line=dict(width=2, color='white')
-                                        ), 
-                                        name='SILENT ACCUM Signal', 
-                                        hovertemplate='<b>SILENT ACCUM</b><br>Date: %{x}<br>Price: %{y:.2f}'
-                                    ), row=1, col=1)
-                                
-                                # Final Layout Update
-                                fig.update_layout(
-                                    height=650, 
-                                    margin=dict(t=30, b=30, l=30, r=30), 
-                                    template='plotly_dark', 
-                                    xaxis_rangeslider_visible=False, 
-                                    showlegend=True, 
-                                    legend=dict(
-                                        orientation="h", 
-                                        yanchor="bottom", 
-                                        y=1.02, 
-                                        xanchor="right", 
-                                        x=1
-                                    )
-                                )
-                                st.plotly_chart(fig, use_container_width=True)
-                            else:
-                                st.warning(f"⚠️ ไม่สามารถดึงข้อมูลราคาของ {sel_sa_ticker} จาก Yahoo Finance ได้ในขณะนี้ กรุณาลองใหม่อีกครั้งหรือตรวจสอบ Ticker")
+                    # Fetch price data for ATR and Chart
+                    df_chart = get_stock_data(selected_ticker)
+                    if df_chart is not None and not df_chart.empty:
+                        df_chart = calculate_quant_indicators(df_chart)
+                        atr = df_chart['ATR'].iloc[-1]
                         
-                        # 2. Intraday Signal History Table (Below Chart)
-                        st.write(f"**Intraday Signal History: {sel_sa_ticker}**")
-                        st.caption("🕒 **Intraday Tracking:** แสดงประวัติสัญญาณทุกรอบเวลาที่เกิดขึ้น (Debounced 15-min)")
+                        # Plan Levels
+                        stop_loss = entry_price - (atr * 2)
+                        risk = entry_price - stop_loss
+                        target = entry_price + (risk * 2)
                         
-                        # Prepare display dataframe
-                        display_sa = ticker_sa[['signal_date', 'signal_time', 'score', 'scan_type', 'days_to_move', 'max_gain_t5']].copy()
-                        display_sa = display_sa.rename(columns={
-                            'signal_date': 'Date',
-                            'signal_time': 'Time',
-                            'score': 'Score',
-                            'scan_type': 'Type',
-                            'days_to_move': 'Days to Move',
-                            'max_gain_t5': 'Max Gain (T+5)'
-                        })
+                        # Layout Metrics
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("Entry Price", f"{entry_price:.2f}")
+                        m2.metric("Stop Loss (2*ATR)", f"{stop_loss:.2f}", delta=f"{(stop_loss/entry_price-1)*100:.1f}%", delta_color="inverse")
+                        m3.metric("Target Price (R:R 1:2)", f"{target:.2f}", delta=f"{(target/entry_price-1)*100:.1f}%")
                         
-                        st.dataframe(
-                            display_sa.style.format({
-                                'Max Gain (T+5)': '{:.2f}%',
-                                'Days to Move': '{:.0f}',
-                                'Score': '{:.1f}'
-                            }, na_rep='-'),
-                            use_container_width=True
+                        # Plotly Chart
+                        fig = go.Figure()
+                        fig.add_trace(go.Candlestick(
+                            x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
+                            low=df_chart['Low'], close=df_chart['Close'], name="Price"
+                        ))
+                        
+                        # Add Plan Lines
+                        fig.add_hline(y=entry_price, line_dash="dash", line_color="blue", annotation_text="Entry")
+                        fig.add_hline(y=stop_loss, line_dash="dash", line_color="red", annotation_text="Stop Loss")
+                        fig.add_hline(y=target, line_dash="dash", line_color="green", annotation_text="Target (1:2)")
+                        
+                        fig.update_layout(title=f"Trade Plan: {selected_ticker}", height=600, template="plotly_dark")
+                        st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("ยังไม่พบหุ้นที่มีสัญญาณ Pre-Breakout คุณภาพสูงในขณะนี้ (Conviction < 50)")
+        else:
+            st.warning("ไม่สามารถโหลดข้อมูลการสแกนล่าสุดได้")
+    except Exception as e:
+        st.info(f"💡 Smart Pattern Radar กำลังเตรียมความพร้อม หรือไม่พบข้อมูลในขณะนี้: {e}")
+
+with main_tabs[1]: # Unified Report
+    if not is_hist:
+        st.info("สรุปผลการวิเคราะห์เชิงปริมาณ (Search + Analyze + Persistence + Backtest)")
+        st.caption("🔍 **ระบบคัดกรองอัจฉริยะ:** รวม 3 กลยุทธ์ใหม่ (1) **Volume Compression** ตรวจจับวอลุ่มแห้งก่อนระเบิด (2) **Sector Flow Filter** คัดเฉพาะหุ้นที่แข็งแกร่งกว่ากลุ่ม (SRS) และ (3) **Dynamic Stop Loss** ปรับตามความผันผวนจริง (ATR)")
+        unified_df = generate_unified_report(batch_df, regime)
+
+        if not unified_df.empty:
+            # Sorting: High Conviction first, then positive signals
+            high_strength = unified_df[unified_df['Conviction_Score'] >= 40].copy()
+            pos_signals = ['BUY', 'GOLDEN BUY', 'PRE-FLY', 'PIN BAR (SUPPORT)', 'SILENT ACCUM']
+            early_birds = unified_df[(unified_df['Conviction_Score'] < 40) & (unified_df['Signal'].isin(pos_signals))].copy()
+            top_conviction = pd.concat([high_strength, early_birds]).head(20)
+            
+            if not top_conviction.empty:
+                st.success(f"🔥 พบหุ้นน่าสนใจ {len(top_conviction)} ตัว (จัดลำดับตามคะแนนและความมั่นใจ)")
+                
+                for idx, (i, row) in enumerate(top_conviction.iterrows()):
+                    is_early_bird = row['Conviction_Score'] < 40
+                    
+                    # Dot & Label Logic
+                    if is_early_bird:
+                        dot_color = "#10b981" # Emerald
+                        s_label = "EARLY ENTRY"
+                    else:
+                        dot_color = "#3b82f6" if "SWING" in row['Strategy'] else "#f59e0b"
+                        s_label = row['Strategy']
+
+                    # Signal Styling
+                    sig_val = row['Signal']
+                    sig_bg = "#f3f4f6"; sig_fg = "#4b5563"; sig_border = "none"
+                    if sig_val in ['BUY', 'GOLDEN BUY', 'PRE-FLY']: sig_bg = "#dcfce7"; sig_fg = "#166534"
+                    elif sig_val == 'REJECTION WICK': sig_bg = "#111827"; sig_fg = "#ffffff"
+                    elif sig_val == 'SILENT ACCUM': sig_bg = "#ecfdf5"; sig_fg = "#065f46"
+                    elif sig_val == 'CONFLICT (HIGH RISK)': sig_bg = "#fee2e2"; sig_fg = "#991b1b"
+                    elif sig_val == 'PIN BAR (SUPPORT)': sig_bg = "#dcfce7"; sig_fg = "#166534"; sig_border = "1px solid #166534"
+                    
+                    # Card Content
+                    intraday_html = ""
+                    if 'Intraday_History' in row and row['Intraday_History']:
+                        past_sigs = ", ".join(row['Intraday_History'])
+                        intraday_html = f'<div class="intraday-alert" style="font-size: 0.65rem; color: #f59e0b; margin-bottom: 4px;">⚡ <b>Intraday:</b> {past_sigs}</div>'
+
+                    # Build card HTML
+                    srs_val = row.get('Sector_RS', 0)
+                    srs_color = "#166534" if srs_val > 0 else ("#991b1b" if srs_val < 0 else "#4b5563")
+                    stop_loss = row.get('Stop_Loss', 0)
+                    pat_consensus = row.get('Pattern Consensus (%)', 0)
+                    
+                    card_html = f'<div class="compact-card"><div class="card-header"><div class="header-left"><div class="dot-indicator" style="background-color: {dot_color};"></div><div class="ticker-name">{row["Ticker"]}</div></div><div class="status-pill">{s_label}</div></div>{intraday_html}<div class="score-container"><div class="score-label">Score</div><div class="score-big">{row["Conviction_Score"]}</div></div><div class="signal-badge" style="background-color: {sig_bg}; color: {sig_fg}; border: {sig_border};">{sig_val}</div><div class="stats-grid"><div class="stat-item"><div class="stat-lbl">SECTOR RS</div><div class="stat-val" style="color: {srs_color}; font-weight: 700;">{srs_val:+.1f}%</div></div><div class="stat-item"><div class="stat-lbl">STOP LOSS</div><div class="stat-val" style="color: #991b1b;">{stop_loss:.2f}</div></div><div class="stat-item"><div class="stat-lbl">PATTERN</div><div class="stat-val">{pat_consensus:.1f}%</div></div></div></div>'
+                    # Clean HTML indentation and render
+                    clean_card_html = textwrap.dedent(card_html).strip()
+                    st.markdown(clean_card_html, unsafe_allow_html=True)
+                    
+                    with st.expander(f"Details: {row['Ticker']}", expanded=False):
+                        st.write(f"✅ {row['Why']}")
+                        if row['Warnings']: st.warning(row['Warnings'])
+                        if user_api_key:
+                            if st.button(f"AI Plan: {row['Ticker']}", key=f"tab_unified_btn_{row['Ticker']}"):
+                                st.markdown(generate_ai_trading_plan(row['Ticker'], batch_df[batch_df['Ticker']==row['Ticker']].iloc[0], user_api_key))
+                
+                st.divider()
+                st.subheader("📋 ตารางสรุปรวม (Summary Table)")
+                # Safe Column Selection
+                u_cols = {
+                    'Ticker': 'Ticker', 
+                    'Conviction_Score': 'Score', 
+                    'Signal': 'Signal', 
+                    'Strategy': 'Strategy', 
+                    'Sector_RS': 'Sector RS', 
+                    'Stop_Loss': 'Stop Loss', 
+                    'Similarity': 'Pattern'
+                }
+                unified_summary = top_conviction[[c for c in u_cols.keys() if c in top_conviction.columns]].copy()
+                unified_summary.rename(columns=u_cols, inplace=True)
+                st.dataframe(unified_summary, use_container_width=True)
+            
+            with st.expander("🔍 View All Unified Candidates", expanded=False):
+                st.dataframe(unified_df, use_container_width=True)
+        else:
+            st.info("ℹ️ ไม่พบหุ้นที่เข้าเกณฑ์ Unified")
+
+with main_tabs[2]: # Bottom Fishing
+    st.info("💎 หุ้นที่ Oversold และเริ่มมีสัญญาณกลับตัว (Bottom Fishing)")
+    st.caption("🎯 **Feature Insight:** ค้นหาหุ้นที่มี RSI ต่ำกว่า 35 และเริ่มมีแรงซื้อกลับ (RSI Turning Up) พร้อม Candlestick รูปแบบ Bullish Pin Bar เพื่อหาจังหวะต้นเทรนด์")
+    
+    # [HYBRID MANDATE] Use latest results from both sources
+    hybrid_results = fetch_market_scan_results()
+    
+    if not hybrid_results.empty:
+        # 1. Filtering for Oversold
+        hybrid_results['rsi'] = pd.to_numeric(hybrid_results['rsi'], errors='coerce')
+        oversold_df = hybrid_results[hybrid_results['rsi'] <= 35].copy()
+        
+        if not oversold_df.empty:
+            oversold_df = oversold_df.sort_values('rsi', ascending=True)
+            st.success(f"🎯 พบหุ้น Oversold (RSI <= 35) จำนวน {len(oversold_df)} ตัว")
+            
+            # Display cards
+            for idx, row in oversold_df.iterrows():
+                r_dot_color = "#8b5cf6" 
+                r_sig_bg = "#f5f3ff"; r_sig_fg = "#5b21b6"
+                
+                # Build dynamic reasons based on available data
+                reasons = []
+                if row['rsi'] < 30: reasons.append("Extreme Oversold (RSI < 30)")
+                elif row['rsi'] <= 35: reasons.append("Oversold Zone (RSI <= 35)")
+                if row.get('is_pinbar'): reasons.append("Bullish Pin Bar Detected")
+                if row.get('signal') == 'BUY': reasons.append("Positive Buy Signal")
+                
+                reasons_html = "".join([f'<div style="font-size: 0.75rem; color: #5b21b6; margin-bottom: 2px;">• {reason}</div>' for reason in reasons])
+                
+                # Card Content
+                r_card_html = f"""
+                <div class="compact-card">
+                    <div class="card-header">
+                        <div class="header-left">
+                            <div class="dot-indicator" style="background-color: {r_dot_color};"></div>
+                            <div class="ticker-name">{row['ticker']}</div>
+                        </div>
+                        <div class="status-pill recovery">OVERSOLD</div>
+                    </div>
+                    <div class="score-container">
+                        <div class="score-label">Score</div>
+                        <div class="score-big">{int(row['score']) if pd.notna(row['score']) else 0}</div>
+                    </div>
+                    <div style="display: flex; flex-direction: column; gap: 4px;">
+                        <div class="signal-badge" style="background-color: {r_sig_bg}; color: {r_sig_fg};">RSI: {row['rsi']:.1f}</div>
+                        <div style="font-size: 0.75rem; font-weight: 600; color: #7c3aed;">Signal: {row['signal']}</div>
+                        <div style="font-size: 0.75rem; font-weight: 600; color: #4b5563;">Strategy: {row['strategy'] if row['strategy'] else 'N/A'}</div>
+                    </div>
+                    <div style="margin-top: 10px; padding: 6px; background-color: #fdfcff; border-radius: 8px; border: 1px dashed #ddd6fe;">
+                        {reasons_html}
+                    </div>
+                    <div class="stats-grid">
+                        <div class="stat-item"><div class="stat-lbl">RSI</div><div class="stat-val">{row['rsi']:.1f}</div></div>
+                        <div class="stat-item"><div class="stat-lbl">PRICE</div><div class="stat-val">{row['close_price']:.2f}</div></div>
+                        <div class="stat-item"><div class="stat-lbl">PIN BAR</div><div class="stat-val">{'✅' if row.get('is_pinbar') else '❌'}</div></div>
+                    </div>
+                </div>
+                """
+                # Clean HTML indentation and render
+                clean_r_card_html = textwrap.dedent(r_card_html).strip()
+                st.markdown(clean_r_card_html, unsafe_allow_html=True)
+                
+                with st.expander(f"Analysis: {row['ticker']}"):
+                    st.write(f"🔍 **เหตุผลที่ติดโผ:** {', '.join(reasons)}")
+                    if user_api_key:
+                        if st.button(f"Oversold AI Plan: {row['ticker']}", key=f"tab_oversold_btn_{row['ticker']}"):
+                            dummy_row = {'Last Price': row['close_price'], 'Signal': row['signal'], 'Bullish Score (%)': row['score'], 'Bearish Score (%)': 0, 'Score Diff': row['score'], 'MTF Conf': 'N/A', 'MTF Score': 0, 'Relative Vol': 1.0, 'Pattern Consensus (%)': 50}
+                            st.markdown(generate_ai_trading_plan(row['ticker'], dummy_row, user_api_key))
+            
+            st.divider()
+            st.subheader("📋 ตารางสรุปหุ้น Oversold (Summary Table)")
+            summary_cols = ['ticker', 'rsi', 'close_price', 'signal', 'strategy', 'source', 'scanned_at']
+            st.dataframe(oversold_df[summary_cols].rename(columns={
+                'ticker': 'Ticker',
+                'rsi': 'RSI',
+                'close_price': 'Price',
+                'signal': 'Signal',
+                'strategy': 'Strategy',
+                'source': 'Source',
+                'scanned_at': 'Scanned At'
+            }), use_container_width=True)
+        else:
+            st.info("ℹ️ ยังไม่พบหุ้น Oversold (RSI <= 35)")
+    else:
+        st.info("ℹ️ ยังไม่มีข้อมูลการสแกนในระบบ (กรุณากด Run SET100 Batch Scan หรือรอระบบ Auto Scan)")
+
+with main_tabs[3]: # Market Breadth
+    st.subheader(f"📊 Market Breadth: หุ้นบวก {pos_count} | หุ้นลบ {neg_count}")
+    st.caption("📈 **Market Breadth:** สรุปภาพรวมความแข็งแกร่งของตลาด SET100 ผ่านจำนวนหุ้นที่บวกและลบ เพื่อดูทิศทางกระแสเงินทุน (Money Flow)")
+    
+    # --- SIGNALS BY CATEGORY ---
+    if 'Signal' in batch_df.columns:
+        st.divider()
+        st.markdown("### 📊 Signals by Category")
+        st.caption("🌐 **Sector Relative Strength (SRS):** วิเคราะห์เปรียบเทียบหุ้นกับค่าเฉลี่ยของกลุ่มอุตสาหกรรม เพื่อหาหุ้นที่ 'แข็งแกร่งกว่าตลาด' (Outperformer)")
+        sig_counts = batch_df['Signal'].value_counts().reset_index()
+        sig_counts.columns = ['Signal', 'Count']
+        
+        # Use small columns for a compact overview
+        num_cols = min(len(sig_counts), 6)
+        s_cols = st.columns(num_cols)
+        for i, (_, s_row) in enumerate(sig_counts.iterrows()):
+            s_cols[i % num_cols].metric(s_row['Signal'], s_row['Count'])
+        
+        st.dataframe(sig_counts, use_container_width=True)
+        
+        # --- SILENT ACCUM CLUSTER DETECTION ---
+        sa_count = sig_counts[sig_counts['Signal'] == 'SILENT ACCUM']['Count'].values[0] if 'SILENT ACCUM' in sig_counts['Signal'].values else 0
+        if sa_count >= 3:
+            st.info(f"🔵 **Smart Money Accumulation Cluster Detected!**  \nพบหุ้น SET100 ติดสัญญาณ `SILENT ACCUM` พร้อมกัน **{sa_count} ตัว**  \n*แนวโน้ม: ตลาดมีโอกาสเกิด Reversal ขาขึ้นในระยะสั้น (Confidence: High)*")
+            st.caption("💡 **Feature Insight:** ระบบตรวจพบการเก็บของพร้อมกันในหลายตัว (Cluster) ซึ่งเป็นสัญญาณบ่งชี้ Market Breadth ว่าเงินทุนกำลังไหลเข้าสะสมหุ้นในกลุ่ม SET100")
+
+with main_tabs[4]: # Admin & History
+    st.subheader("🏆 Leaderboard & History (Supabase)")
+    st.caption("📜 **Data Persistence:** ดึงข้อมูลประวัติการสแกนและผลแพ้ชนะ (Win/Loss) ย้อนหลังโดยตรงจากฐานข้อมูล Cloud (Supabase)")
+    # Sorting desired columns to the front
+    cols = batch_df.columns.tolist()
+    desired_order = ["Ticker", "Signal", "Pattern Consensus (%)", "Last Price", "Day High"]
+    actual_order = [c for c in desired_order if c in batch_df.columns]
+    display_df = batch_df[actual_order + [c for c in cols if c not in actual_order]]
+    
+    with st.expander("🔍 View Scanner Leaderboard (Table)", expanded=True):
+        st.dataframe(display_df, use_container_width=True)
+    
+    st.divider()
+    st.subheader("📜 Database & Labeling")
+    
+    l1, l2 = st.columns([1, 2])
+    if l1.button("🏷️ Run Automated Labeling", use_container_width=True):
+        with st.spinner("Updating labels..."):
+            count = run_automated_labeling()
+            st.success(f"Updated {count} records!") if count > 0 else st.info("No new records to label.")
+
+    with st.expander("View Saved Scan History", expanded=False):
+        if supabase:
+            try:
+                response = supabase.table("scan_results") \
+                    .select("*") \
+                    .order("id", desc=True) \
+                    .limit(500) \
+                    .execute()
+                history_df = pd.DataFrame(response.data)
+                
+                if not history_df.empty:
+                    def style_outcome(val):
+                        if val == 'Win': return 'color: green; font-weight: bold'
+                        if val == 'Loss': return 'color: red'
+                        return ''
+                    st.dataframe(history_df.style.map(style_outcome, subset=['outcome_label']), use_container_width=True)
+                
+                st.write("### 📊 Quick Insights from DB")
+                c1, c2, c3 = st.columns(3)
+                # Load labeled data for metrics
+                labeled_df = pd.DataFrame()
+                try:
+                    l_resp = supabase.table("scan_results").select("*").not_.is_("outcome_label", "null").execute()
+                    labeled_df = pd.DataFrame(l_resp.data)
+                except: pass
+                
+                if not labeled_df.empty:
+                    win_rate = (len(labeled_df[labeled_df['outcome_label'] == 'Win']) / len(labeled_df)) * 100
+                    c2.metric("Win Rate (Labeled)", f"{win_rate:.1f}%")
+                
+                unique_tickers = history_df['ticker'].unique()
+                selected_h_ticker = c3.selectbox("Select Ticker for Score Trend", unique_tickers, key="hist_ticker_select")
+                if selected_h_ticker:
+                    ticker_history = history_df[history_df['ticker'] == selected_h_ticker].sort_values('id')
+                    c3.line_chart(ticker_history.set_index('scan_date')['bull_score'])
+            except Exception as e:
+                st.error(f"Error loading history: {e}")
+    
+    st.divider()
+    st.subheader("📤 Export & Printing Tools")
+    ex1, ex2, ex3 = st.columns(3)
+    
+    # Formatting and Styling for Export
+    def style_batch(styler):
+        def highlight_best(row):
+            styles = [''] * len(row)
+            if 'BUY' in str(row['Signal']): styles = ['background-color: rgba(34, 197, 94, 0.2)'] * len(row)
+            elif row['Bearish Score (%)'] > 85: styles = ['background-color: rgba(239, 68, 68, 0.2)'] * len(row)
+            return styles
+        styler.apply(highlight_best, axis=1)
+        styler.map(lambda x: 'color: lime; font-weight: bold' if 'BUY' in str(x) else ('color: red; font-weight: bold' if x == 'SELL' else 'color: gray'), subset=['Signal'])
+        styler.format({'Last Price': '{:.2f}', '% Change': '{:+.2f}%', 'Relative Vol': '{:.2f}x', 'MTF Score': '{:.0f}', 'Pattern Consensus (%)': '{:.1f}%', 'Bullish Score (%)': '{:.1f}%', 'Bearish Score (%)': '{:.1f}%', 'Score Diff': '{:.1f}'})
+        return styler
+
+    styled_export = style_batch(display_df.style)
+    html_buffer = styled_export.to_html()
+    
+    ex1.checkbox("📸 Full-Length View (For PDF)", key="admin_full_view")
+    
+    full_html = f"<html><body><h2>🏆 SET100 Quant Report</h2>{html_buffer}</body></html>"
+    ex2.download_button("📄 Download HTML Report", data=full_html, file_name=f"SET100_Report_{datetime.now(SET_TZ).strftime('%Y%m%d_%H%M')}.html", mime="text/html", use_container_width=True)
+    
+    csv = display_df.to_csv(index=False).encode('utf-8-sig')
+    ex3.download_button("Excel/CSV Export", data=csv, file_name=f"SET100_Data_{datetime.now(SET_TZ).strftime('%Y%m%d_%H%M')}.csv", mime="text/csv", use_container_width=True)
+
+with main_tabs[5]: # SILENT ACCUM Insight
+    st.info("💎 เจาะลึกพฤติกรรมหุ้น SILENT ACCUM: วัดระยะเวลาการฟื้นตัวและโอกาสชนะ")
+    st.caption("📈 **Feature Insight:** วิเคราะห์สถิติย้อนหลังของสัญญาณ SILENT ACCUM เพื่อหาค่าเฉลี่ยจำนวนวันที่ราคามักจะ 'ระเบิด' (Days to Move) และอัตราการชนะ (Win Rate) ภายใน 5 วัน")
+    
+    # 0. Display Control
+    row_limit = st.slider("จำนวนรายการที่แสดงผลล่าสุด", min_value=10, max_value=200, value=30, step=10, key="sa_row_limit")
+    
+    sa_data = get_silent_accum_insights(limit=row_limit)
+    
+    if sa_data is not None and not sa_data.empty:
+        # 1. Overview Metrics
+        # Only calculate metrics for rows that have days_to_move (historical)
+        hist_sa = sa_data[sa_data['days_to_move'].notna()]
+        
+        if not hist_sa.empty:
+            avg_days = hist_sa['days_to_move'].mean()
+            win_rate_t5 = (hist_sa['win_t5'].sum() / len(hist_sa)) * 100
+        else:
+            avg_days = 0
+            win_rate_t5 = 0
+            
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Avg. Days to Move", f"{avg_days:.1f} Days")
+        m2.metric("Win Rate (T+5)", f"{win_rate_t5:.1f}%")
+        m3.metric("Sample Size", f"{len(sa_data)} Signals")
+        
+        # 2. Distribution Chart
+        st.write("### 📊 Distribution of Days to Move (+1% Upside)")
+        dist_df = sa_data['days_to_move'].value_counts().sort_index().reset_index()
+        dist_df.columns = ['Days', 'Frequency']
+        
+        fig_sa = go.Figure(go.Bar(
+            x=dist_df['Days'], y=dist_df['Frequency'],
+            text=dist_df['Frequency'], textposition='auto',
+            marker=dict(color='#10b981')
+        ))
+        fig_sa.update_layout(height=350, margin=dict(t=20, b=20, l=20, r=20), xaxis_title="Trading Days", yaxis_title="Number of Cases")
+        st.plotly_chart(fig_sa, use_container_width=True)
+        
+        # 3. Recent Cases
+        st.write(f"### 📜 Recent SILENT ACCUM Cases (Top {row_limit})")
+        st.dataframe(
+            sa_data[['ticker', 'signal_date', 'score', 'days_to_move', 'max_gain_t5']]
+            .style.format({
+                'max_gain_t5': '{:.2f}%',
+                'days_to_move': '{:.0f}',
+                'score': '{:.1f}'
+            }, na_rep='Pending'), 
+            use_container_width=True
+        )
+
+        st.divider()
+        # 4. Single Ticker Analysis
+        st.divider()
+        st.write("### 🔍 SILENT ACCUM Single Ticker Analysis")
+        
+        # Fetch all unique tickers that have SILENT ACCUM signals to populate selectbox
+        all_sa_tickers = []
+        if sa_data is not None and not sa_data.empty:
+            all_sa_tickers = sorted(sa_data['ticker'].unique().tolist())
+        
+        sel_sa_ticker = st.selectbox("เลือกหุ้นเพื่อดูประวัติ SILENT ACCUM รายตัว", all_sa_tickers, key="sa_ticker_select_new")
+        
+        if sel_sa_ticker:
+            # Fetch full historical analysis for THIS specific ticker (Intraday Timeline)
+            with st.spinner(f"กำลังวิเคราะห์ประวัติ SILENT ACCUM สำหรับ {sel_sa_ticker}..."):
+                # [INTRADAY TIMELINE] Set deduplicate=False to see all signals for this ticker
+                ticker_sa = get_silent_accum_insights(limit=None, ticker_filter=sel_sa_ticker, deduplicate=False)
+            
+            if ticker_sa is not None and not ticker_sa.empty:
+                # 1. Price Chart with SILENT ACCUM Markers (Full Width)
+                st.write(f"**Price Chart with SILENT ACCUM Markers: {sel_sa_ticker}**")
+                # ... (Rest of the chart logic stays same as it uses normalized dates for markers)
+                # ...
+                # (I will keep the chart code as it was in my previous successful edit)
+                with st.spinner(f"ดึงข้อมูลกราฟสำหรับ {sel_sa_ticker}..."):
+                    hist_price_raw = get_stock_data(sel_sa_ticker)
+                    
+                    if hist_price_raw is not None and not hist_price_raw.empty:
+                        # Standardize for plotting (Last 180 days)
+                        df_plot = hist_price_raw.tail(180).copy()
+                        # Ensure index is naive datetime for Plotly and marker alignment
+                        if df_plot.index.tz is not None:
+                            df_plot.index = df_plot.index.tz_convert(SET_TZ).tz_localize(None)
+                        
+                        # 1. Create Subplots: Price (Candlestick) + Volume
+                        fig = make_subplots(
+                            rows=2, cols=1, 
+                            shared_xaxes=True, 
+                            vertical_spacing=0.05, 
+                            row_heights=[0.7, 0.3]
                         )
-                    else:
-                        st.info(f"ไม่พบประวัติสัญญาณ SILENT ACCUM สำหรับ {sel_sa_ticker} ในช่วง 90 วันที่ผ่านมา")
-
-            else:
-                st.warning("ยังไม่มีข้อมูล SILENT ACCUM เพียงพอสำหรับการวิเคราะห์")
-
-
-        with main_tabs[6]: # Market Scan Results (Hybrid)
-            st.info("📊 Market Scan Results (SET100)")
-            st.caption("🕒 **Hybrid View:** แสดงผลการวิเคราะห์ล่าสุดของหุ้นแต่ละตัว โดยรวมข้อมูลจากทั้งการสแกนอัตโนมัติ (Auto) และการสแกนด้วยตนเอง (Manual)")
-            
-            combined_df = fetch_market_scan_results()
-            
-            if not combined_df.empty:
-                # 1. Metric Summary
-                last_scan = combined_df['scanned_at'].max()
-                buy_count = len(combined_df[combined_df['signal'] == 'BUY'])
-                wait_count = len(combined_df[combined_df['signal'].str.contains('WAIT', na=False)])
-                
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Total Stocks", len(combined_df))
-                m2.metric("BUY Signals", buy_count)
-                m3.metric("WAIT Signals", wait_count)
-                m4.metric("Latest Update", last_scan.strftime("%H:%M:%S"))
-                
-                st.divider()
-                
-                # 2. Filters
-                f1, f2, f3 = st.columns([1, 1, 2])
-                sig_options = ["ALL"] + sorted(combined_df['signal'].dropna().unique().tolist())
-                sel_sig = f1.selectbox("Filter Signal", sig_options, key="mkt_sig_filter")
-                
-                strat_options = ["ALL"] + sorted(combined_df['strategy'].dropna().unique().tolist())
-                sel_strat = f2.selectbox("Filter Strategy", strat_options, key="mkt_strat_filter")
-                
-                search_ticker = f3.text_input("🔍 Ticker Search", "", key="mkt_ticker_search").upper()
-                
-                # Apply Filters
-                filtered_mkt = combined_df.copy()
-                if sel_sig != "ALL":
-                    filtered_mkt = filtered_mkt[filtered_mkt['signal'] == sel_sig]
-                if sel_strat != "ALL":
-                    filtered_mkt = filtered_mkt[filtered_mkt['strategy'] == sel_strat]
-                if search_ticker:
-                    filtered_mkt = filtered_mkt[filtered_mkt['ticker'].str.contains(search_ticker)]
-                
-                # 3. Display Dataframe with Styling
-                def style_mkt_scan(styler):
-                    def highlight_buy(row):
-                        return ['background-color: rgba(34, 197, 94, 0.15)' if row['signal'] == 'BUY' else '' for _ in row]
-                    
-                    styler.apply(highlight_buy, axis=1)
-                    styler.format({
-                        'price': '{:.2f}',
-                        'close_price': '{:.2f}',
-                        'change_percent': '{:+.2f}%',
-                        'score': '{:.1f}',
-                        'bull_score': '{:.1f}',
-                        'rsi': '{:.1f}',
-                        'volume': '{:,.0f}'
-                    }, na_rep='N/A')
-                    return styler
-
-                st.subheader(f"📋 Market Results ({len(filtered_mkt)} stocks)")
-                if not filtered_mkt.empty:
-                    # Map price if needed
-                    if 'price' in filtered_mkt.columns:
-                        filtered_mkt['close_price'] = filtered_mkt['price']
                         
-                    # Reorder columns for readability
-                    display_cols = [
-                        'ticker', 'signal', 'score', 'strategy', 'close_price', 
-                        'change_percent', 'rsi', 'volume', 'source', 'scanned_at'
-                    ]
-                    actual_display = [c for c in display_cols if c in filtered_mkt.columns]
-                    st.dataframe(style_mkt_scan(filtered_mkt[actual_display].style), use_container_width=True)
-                else:
-                    st.warning("ไม่พบข้อมูลตามเงื่อนไขที่กรอง")
-
-                # --- NEW SECTION: Historical Signal Analysis ---
-                st.divider()
-                st.subheader("📈 Stock Historical Signal Analysis")
-                st.caption("📊 **Historical Analysis:** เจาะลึกประวัติสัญญาณเทรดและแนวโน้มราคาย้อนหลัง 90 วัน (Hybrid Data)")
-                
-                all_tickers = sorted([str(t) for t in combined_df['ticker'].dropna().unique().tolist()])
-                sel_hist_ticker = st.selectbox("เลือกหุ้นเพื่อดูประวัติสัญญาณ", all_tickers, key="mkt_hist_ticker_select")
-                
-                if sel_hist_ticker:
-                    with st.spinner(f"Loading historical data for {sel_hist_ticker}..."):
-                        # Fetch price data
-                        hist_price_raw = get_stock_data(sel_hist_ticker)
-                        if hist_price_raw is not None:
-                            # 1. Prepare Price Data
-                            hist_price = calculate_quant_indicators(hist_price_raw, 14, 10, 50)
-                            hist_price = hist_price.tail(90).copy()
-                            # Convert index to string 'YYYY-MM-DD' for exact matching
-                            hist_price['date_str'] = hist_price.index.strftime('%Y-%m-%d')
-                            
-                            # 2. Fetch & Prepare Signal Data
-                            hist_signals = fetch_ticker_combined_history(sel_hist_ticker, days=90)
-                            
-                            if not hist_signals.empty:
-                                # Standardize signal dates to 'YYYY-MM-DD' strings
-                                hist_signals['signal_date_str'] = pd.to_datetime(hist_signals['scanned_at']).dt.strftime('%Y-%m-%d')
-                                
-                                # Unify Signal Naming for Mapping (Excluding SILENT ACCUM)
-                                def clean_signal_name(row):
-                                    sig = str(row.get('signal', '')).upper()
-                                    strat = str(row.get('strategy', '')).upper()
-                                    is_silent = bool(row.get('is_silent_accum', False))
-                                    
-                                    # EXCLUDE SILENT ACCUM (Moved to dedicated tab)
-                                    if 'SILENT' in sig or 'SILENT' in strat or is_silent: return None
-                                    
-                                    if 'BUY' in sig or 'BREAKOUT' in sig: return 'BUY / BREAKOUT'
-                                    if 'PULLBACK' in sig or 'RETEST' in sig or 'PIN BAR' in sig: return 'PULLBACK / PIN BAR'
-                                    if 'MOMENTUM' in sig or 'VOLUME' in sig or 'RECOVERY' in sig: return 'MOMENTUM / VOL'
-                                    
-                                    # Default all other bearish/unknown to SELL / WARNING
-                                    return 'SELL / WARNING'
-
-                                hist_signals['display_signal'] = hist_signals.apply(clean_signal_name, axis=1)
-                                
-                                # Dynamic Signal Selection Controls
-                                # Filter out None/NaN and get unique sorted list
-                                available_signals = sorted([str(s) for s in hist_signals['display_signal'].dropna().unique().tolist()])
-                                selected_display_signals = st.multiselect(
-                                    "🎯 เลือกประเภทสัญญาณที่ต้องการแสดง (Multi-Signal Overlay)", 
-                                    available_signals, 
-                                    default=available_signals,
-                                    key="hist_sig_multiselect"
-                                )
-                                
-                                # Filter signals by selected types and ticker
-                                clean_sel_ticker = sel_hist_ticker.strip().upper()
-                                base_sel_ticker = clean_sel_ticker.replace('.BK', '')
-                                hist_signals['ticker_clean'] = hist_signals['ticker'].str.strip().str.upper().str.replace('.BK', '')
-                                
-                                filtered_signals = hist_signals[
-                                    (hist_signals['display_signal'].isin(selected_display_signals)) & 
-                                    (hist_signals['ticker_clean'] == base_sel_ticker)
-                                ].copy()
-                                
-                                # FINAL DEDUPLICATION: Ensure 1 marker per Category per Day
-                                filtered_signals = filtered_signals.sort_values('scanned_at', ascending=True)
-                                filtered_signals = filtered_signals.drop_duplicates(
-                                    subset=['signal_date_str', 'display_signal'], 
-                                    keep='first'
-                                )
-                                
-                                # Print Debug Summary to Streamlit (Temporary Check)
-                                st.caption(f"🔍 DEBUG: Found {len(filtered_signals)} technical signals for {sel_hist_ticker} (Last 90 days)")
-                            else:
-                                filtered_signals = pd.DataFrame()
-                                selected_display_signals = []
-
-                            # Create Plotly Chart
-                            fig_hist = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-                            
-                            # 1. Candlestick (Use Datetime Index for X-axis)
-                            fig_hist.add_trace(go.Candlestick(
-                                x=hist_price.index,
-                                open=hist_price['Open'],
-                                high=hist_price['High'],
-                                low=hist_price['Low'],
-                                close=hist_price['Close'],
-                                name="Price"
+                        # Candlestick
+                        fig.add_trace(go.Candlestick(
+                            x=df_plot.index, 
+                            open=df_plot['Open'], 
+                            high=df_plot['High'], 
+                            low=df_plot['Low'], 
+                            close=df_plot['Close'], 
+                            name='Price'
+                        ), row=1, col=1)
+                        
+                        # Volume
+                        fig.add_trace(go.Bar(
+                            x=df_plot.index, 
+                            y=df_plot['Volume'], 
+                            name='Volume', 
+                            marker_color='rgba(100, 100, 100, 0.5)'
+                        ), row=2, col=1)
+                        
+                        # 2. Add SILENT ACCUM Markers (Pin to Low Price)
+                        # Alignment: Convert signal dates to naive date objects for comparison
+                        sig_dates = pd.to_datetime(ticker_sa['signal_date']).dt.date.unique().tolist()
+                        df_plot_dates = df_plot.index.date
+                        
+                        # Filter rows in df_plot that match a signal date
+                        marker_mask = [d in sig_dates for d in df_plot_dates]
+                        markers = df_plot[marker_mask].copy()
+                        
+                        if not markers.empty:
+                            fig.add_trace(go.Scatter(
+                                x=markers.index, 
+                                y=markers['Low'] * 0.98, 
+                                mode='markers', 
+                                marker=dict(
+                                    symbol='triangle-up', 
+                                    size=15, 
+                                    color='#3b82f6', 
+                                    line=dict(width=2, color='white')
+                                ), 
+                                name='SILENT ACCUM Signal', 
+                                hovertemplate='<b>SILENT ACCUM</b><br>Date: %{x}<br>Price: %{y:.2f}'
                             ), row=1, col=1)
-                            
-                            # 2. Add Multi-Signal Markers (Overlay using Exact Date Matching)
-                            # Optimized Color & Symbol Mapping for Technical Signals
-                            SIGNAL_STYLE = {
-                                'BUY / BREAKOUT': {'symbol': 'triangle-up', 'color': '#10b981', 'size': 14, 'label': '🟢 BUY / BREAKOUT'},
-                                'SELL / WARNING': {'symbol': 'triangle-down', 'color': '#ef4444', 'size': 14, 'label': '🔴 SELL / WARNING'},
-                                'PULLBACK / PIN BAR': {'symbol': 'diamond', 'color': '#f59e0b', 'size': 12, 'label': '🟡 PULLBACK / PIN BAR'},
-                                'MOMENTUM / VOL': {'symbol': 'square', 'color': '#a855f7', 'size': 12, 'label': '🟣 MOMENTUM / VOL'}
-                            }
-
-                            if not filtered_signals.empty:
-                                # Join signals with price data on date string to get correct OHLC positions
-                                df_markers = hist_price.merge(
-                                    filtered_signals, 
-                                    left_on='date_str', 
-                                    right_on='signal_date_str', 
-                                    how='inner'
-                                )
-                                
-                                if not df_markers.empty:
-                                    # Ensure the merged dataframe has the original datetime index for plotting
-                                    df_markers.index = pd.to_datetime(df_markers['date_str'])
-                                    
-                                    for sig_name in selected_display_signals:
-                                        sig_group = df_markers[df_markers['display_signal'] == sig_name]
-                                        if sig_group.empty: continue
-                                        
-                                        style = SIGNAL_STYLE.get(sig_name, SIGNAL_STYLE['SELL / WARNING'])
-                                        
-                                        # Strict Y-axis Alignment based on Signal Type
-                                        y_pos = []
-                                        for _, m_row in sig_group.iterrows():
-                                            # Buy-side signals -> Below candle
-                                            if sig_name in ['BUY / BREAKOUT', 'PULLBACK / PIN BAR', 'MOMENTUM / VOL']:
-                                                y_pos.append(m_row['Low'] * 0.98)
-                                            # Sell-side/Warning/Other signals -> Above candle
-                                            else:
-                                                y_pos.append(m_row['High'] * 1.02)
-                                        
-                                        hover_texts = []
-                                        for _, m_row in sig_group.iterrows():
-                                            h_rsi = f"RSI: {m_row.get('rsi', 0):.1f}" if pd.notna(m_row.get('rsi')) else ""
-                                            h_vol = f"Vol: {m_row.get('volume', 0):,.0f}" if pd.notna(m_row.get('volume')) else ""
-                                            score = m_row.get('score', 'N/A')
-                                            
-                                            # Use specific signal name for tooltip if category is SELL / WARNING
-                                            display_title = m_row.get('signal', sig_name) if sig_name == 'SELL / WARNING' else sig_name
-                                            hover_texts.append(f"<b>{display_title}</b><br>Score: {score}<br>{h_rsi}<br>{h_vol}")
-
-                                        fig_hist.add_trace(go.Scatter(
-                                            x=sig_group.index, 
-                                            y=y_pos,
-                                            mode='markers',
-                                            marker=dict(
-                                                symbol=style['symbol'], 
-                                                size=style['size'], 
-                                                color=style['color'],
-                                                line=dict(width=1, color='white') # Add white border for visibility
-                                            ),
-                                            name=style['label'],
-                                            text=hover_texts,
-                                            hovertemplate="%{text}<extra></extra>",
-                                            showlegend=True
-                                        ), row=1, col=1)
-                            
-                            # 3. RSI Subplot
-                            fig_hist.add_trace(go.Scatter(
-                                x=hist_price.index, y=hist_price['RSI'],
-                                name="RSI", line=dict(color='#8b5cf6', width=2)
-                            ), row=2, col=1)
-                            
-                            fig_hist.add_hline(y=70, line_dash="dash", line_color="#ef4444", row=2, col=1)
-                            fig_hist.add_hline(y=30, line_dash="dash", line_color="#10b981", row=2, col=1)
-                            
-                            # Dark Theme Style
-                            fig_hist.update_layout(
-                                height=650,
-                                template="plotly_dark",
-                                paper_bgcolor='rgba(0,0,0,0)',
-                                plot_bgcolor='rgba(0,0,0,0.05)',
-                                xaxis_rangeslider_visible=False,
-                                margin=dict(t=50, b=50, l=50, r=50),
-                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                            )
-                            
-                            st.plotly_chart(fig_hist, use_container_width=True)
-                        else:
-                            st.error(f"ไม่สามารถดึงข้อมูลราคาของ {sel_hist_ticker} ได้")
-            else:
-                st.info("ℹ️ ยังไม่มีข้อมูลการสแกนในระบบ (กรุณากด Run SET100 Batch Scan หรือรอระบบ Auto Scan)")
-
-        with main_tabs[7]: # Advanced Tools / More Features
-            st.info("🛠️ Advanced Tools & Strategy Builder")
-            st.caption("⚙️ **Advanced Features:** รวมเครื่องมือวิเคราะห์เชิงลึก เช่น การปรับจูน Parameter ด้วย AI, ระบบทดสอบย้อนหลัง (Backtest) และห้องทดลองรูปแบบราคา (Pattern Lab)")
-            
-            # Sub-tabs for Advanced Tools
-            adv_tabs = st.tabs(["⚙️ Strategy Builder", "📈 Performance Dashboard", "🔮 Pattern Lab"])
-            
-            with adv_tabs[0]: # Strategy Builder
-                st.subheader("🛠 Quant Strategy Builder")
-                st.caption("🔧 **Strategy Builder:** ปรับแต่งเงื่อนไขการซื้อขายด้วยตัวเอง หรือให้ AI ช่วยคำนวณค่าที่เหมาะสมที่สุด (Optimizer)")
-                
-                # Initialize AI Optimization values in session state
-                if 'ai_params' not in st.session_state:
-                    st.session_state['ai_params'] = None
-                
-                if 'stock_list' not in st.session_state:
-                    st.session_state['stock_list'] = ["KTC.BK", "AMATA.BK", "RCL.BK", "CPF.BK"]
-                
-                col_data, col_ai = st.columns(2)
-                with col_data:
-                    st.markdown("### 📥 Data Management")
-                    new_ticker = st.text_input("➕ Add Ticker", "", key="adv_add_ticker").upper()
-                    if new_ticker:
-                        if not new_ticker.endswith(".BK") and "." not in new_ticker: new_ticker += ".BK"
-                        if new_ticker not in st.session_state['stock_list']:
-                            st.session_state['stock_list'].append(new_ticker)
-                    selected_ticker = st.selectbox("Select Stock", st.session_state['stock_list'], key="adv_select_ticker")
-                    fetch_btn = st.button("🚀 Fetch Data", type="primary", use_container_width=True, key="adv_fetch_btn")
-                
-                if fetch_btn:
-                    with st.spinner("Downloading..."):
-                        df_raw_new = get_stock_data(selected_ticker)
-                        if df_raw_new is not None:
-                            st.session_state['df_raw'] = df_raw_new
-                            st.session_state['active_ticker'] = selected_ticker
-                            st.rerun()
-                        else:
-                            st.error("Failed to load data.")
-                
-                with col_ai:
-                    st.markdown("### 🤖 AI Strategy Optimizer")
-                    if 'df_raw' in st.session_state:
-                        if st.button("Run AI Optimizer", use_container_width=True, key="adv_ai_btn"):
-                            if not user_api_key:
-                                st.warning("Please enter Google API Key in the sidebar.")
-                            else:
-                                current_df = calculate_quant_indicators(st.session_state['df_raw'], 14, 5, 20)
-                                _, current_stats, _ = run_backtest(current_df, 30, 70, 1.2)
-                                
-                                with st.status("AI is analyzing...", expanded=True) as status:
-                                    ai_rec = get_ai_optimization(
-                                        st.session_state['active_ticker'], 
-                                        current_stats, 
-                                        None, 
-                                        {"rsi_p": 14, "rsi_b": 30, "rsi_s": 70, "ema_f": 5, "ema_s": 20, "rv_m": 1.2},
-                                        user_api_key
-                                    )
-                                if ai_rec:
-                                    st.session_state['ai_params'] = ai_rec
-                                    status.update(label="✅ AI Optimization Complete!", state="complete")
-                                    st.info(f"💡 AI Recommendation: {ai_rec['reasoning']}")
-                                else:
-                                    status.update(label="❌ AI Optimization Failed", state="error")
-                    else:
-                        st.info("Select a stock and fetch data to use AI Optimizer.")
-
-                st.divider()
-                with st.form("adv_strategy_params"):
-                    st.subheader("⚙️ Buy/Sell Parameters")
-                    p = st.session_state['ai_params'] if st.session_state['ai_params'] else {}
-                    
-                    c1, c2, c3 = st.columns(3)
-                    rsi_p = c1.slider("RSI Period", 5, 30, p.get('rsi_p', 14))
-                    rsi_b = c2.slider("Buy Threshold (RSI <=)", 10, 80, p.get('rsi_b', 50))
-                    rsi_s = c3.slider("Sell Threshold (RSI >=)", 40, 90, p.get('rsi_s', 70))
-                    
-                    c4, c5, c6 = st.columns(3)
-                    ema_f = c4.number_input("Fast EMA", 5, 50, p.get('ema_f', 10))
-                    ema_s = c5.number_input("Slow EMA", 10, 200, p.get('ema_s', 50))
-                    rv_m = c6.slider("Min Rel. Volume", 1.0, 3.0, p.get('rv_m', 1.5), 0.1)
-                    
-                    st.markdown("### 🔍 Scanner Settings")
-                    min_sim = st.slider("Min Similarity Threshold (%)", 50, 95, 80)
-                    scanner_mode = st.radio("Scanner Mode", ["Bullish (Breakout)", "Bearish (Danger Zone)"], horizontal=True)
-                    
-                    apply_btn = st.form_submit_button("🔄 Apply & Backtest", use_container_width=True)
-
-            with adv_tabs[1]: # Performance Dashboard
-                if 'df_raw' in st.session_state:
-                    df = calculate_quant_indicators(st.session_state['df_raw'], rsi_p, ema_f, ema_s)
-                    trade_log, stats, equity_curve = run_backtest(df, rsi_b, rsi_s, rv_m)
-                    
-                    st.title(f"📈 {st.session_state['active_ticker']} Strategy Station")
-                    
-                    # Volatility Guard Alert
-                    atr_now = df['ATR'].iloc[-1]
-                    atr_avg5 = df['ATR_Avg_5'].iloc[-1]
-                    if atr_now > (atr_avg5 * 1.2):
-                        st.warning(f"⚠️ **High Volatility Alert**: ATR ({atr_now:.2f}) is 20%+ above 5-day average ({atr_avg5:.2f}). Exercise caution!")
-                    
-                    # 1. Performance Metrics
-                    if stats and 'Total Return (%)' in stats:
-                        m1, m2, m3, m4 = st.columns(4)
-                        m1.metric("Total Return", f"{stats['Total Return (%)']:.2f}%")
-                        m2.metric("Win Rate", f"{stats['Win Rate (%)']:.1f}%")
-                        m3.metric("Max Drawdown", f"-{stats['Max Drawdown (%)']:.2f}%", delta_color="inverse")
-                        m4.metric("Total Trades", stats['Total Trades'])
-                    
-                    # 2. Main Chart
-                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-                    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price"), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=df.index, y=df['EMA_Fast'], name=f"EMA {ema_f}", line=dict(color='orange', width=1)), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=df.index, y=df['EMA_Slow'], name=f"EMA {ema_s}", line=dict(color='blue', width=1)), row=1, col=1)
-                    if trade_log is not None:
-                        fig.add_trace(go.Scatter(x=trade_log['Entry Date'], y=trade_log['Entry Price'], mode='markers', marker=dict(symbol='triangle-up', size=12, color='green'), name='Buy'), row=1, col=1)
-                        fig.add_trace(go.Scatter(x=trade_log['Exit Date'], y=trade_log['Exit Price'], mode='markers', marker=dict(symbol='triangle-down', size=12, color='red'), name='Sell'), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], name="RSI", line=dict(color='purple')), row=2, col=1)
-                    fig.add_hline(y=rsi_s, line_dash="dash", line_color="red", row=2, col=1)
-                    fig.add_hline(y=rsi_b, line_dash="dash", line_color="green", row=2, col=1)
-                    fig.update_layout(height=600, template="plotly_white", xaxis_rangeslider_visible=False)
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # 3. DTW Projection Chart
-                    st.subheader("🔮 Pattern Matching Projection (Next 20 Days)")
-                    projections = get_dtw_projection(df)
-                    if projections:
-                        proj_fig = go.Figure()
-                        last_40 = df['Close'].iloc[-40:]
-                        proj_fig.add_trace(go.Scatter(x=list(range(-40, 0)), y=last_40.values, name="Actual Price", line=dict(color='black', width=3)))
-                        colors = ['rgba(34, 197, 94, 0.6)', 'rgba(59, 130, 246, 0.6)', 'rgba(168, 85, 247, 0.6)']
-                        for i, p in enumerate(projections):
-                            proj_fig.add_trace(go.Scatter(x=list(range(0, 20)), y=p['path'], name=f"Match {i+1} ({p['date_range']})", line=dict(dash='dot', color=colors[i])))
-                        proj_fig.update_layout(height=400, template="plotly_white", xaxis_title="Days from Today", yaxis_title="Price")
-                        st.plotly_chart(proj_fig, use_container_width=True)
-                    
-                    # 4. Trade Log & Equity Curve
-                    c_log, c_eq = st.columns([0.6, 0.4])
-                    with c_log:
-                        st.subheader("📜 Detailed Trade Log")
-                        if trade_log is not None:
-                            st.dataframe(trade_log.style.format({'Profit (%)': '{:.2f}%', 'Entry Price': '{:.2f}', 'Exit Price': '{:.2f}'}), use_container_width=True)
-                        else:
-                            st.info("No trades executed with current parameters.")
-                    with c_eq:
-                        st.subheader("📈 Equity Growth")
-                        if equity_curve is not None:
-                            eq_fig = go.Figure()
-                            eq_fig.add_trace(go.Scatter(x=equity_curve['Trade'], y=equity_curve['Equity'], fill='tozeroy', line=dict(color='green')))
-                            eq_fig.update_layout(height=350, template="plotly_white", title="Capital: 100k Base")
-                            st.plotly_chart(eq_fig, use_container_width=True)
-                else:
-                    st.info("Select a stock in 'Strategy Builder' tab to see performance.")
-
-            with adv_tabs[2]: # Pattern Lab
-                if 'df_raw' in st.session_state:
-                    mode_label = "🚀 Pre-Breakout Pattern Scanner" if scanner_mode == "Bullish (Breakout)" else "🚩 Danger Zone Scanner"
-                    st.subheader(f"{mode_label} (Last 5 Days vs History)")
-                    scan_mode_val = 'bullish' if scanner_mode == "Bullish (Breakout)" else 'bearish'
-                    with st.spinner(f"Scanning for historical patterns..."):
-                        scan_results = get_pre_breakout_scanner(df, mode=scan_mode_val)
-                    if scan_results:
-                        scan_fig = make_subplots(rows=1, cols=3, subplot_titles=("Price Pattern Similarity", "Volume Flow Similarity", "Candlestick Comparison"), column_widths=[0.3, 0.3, 0.4])
-                        main_color = 'green' if scan_mode_val == 'bullish' else 'red'
-                        jump_color = 'lime' if scan_mode_val == 'bullish' else 'crimson'
-                        scan_fig.add_trace(go.Scatter(x=list(range(5)), y=scan_results['curr_p'], name="Current Price", line=dict(color='black', width=3)), row=1, col=1)
-                        scan_fig.add_trace(go.Scatter(x=list(range(5)), y=scan_results['curr_v'], name="Current Volume", line=dict(color='gray', width=3, dash='dash')), row=1, col=2)
-                        best = scan_results['matches'][0]
-                        scan_fig.add_trace(go.Scatter(x=list(range(5)), y=best['hist_p'], name=f"Best Match History ({pd.to_datetime(best['date']).date()})", line=dict(color=main_color, dash='dot')), row=1, col=1)
-                        jump_label = f"{best['jump']:+.1f}%"
-                        scan_fig.add_trace(go.Scatter(x=[4, 5], y=[best['hist_p_ext'][4], best['hist_p_ext'][5]], name="Historical Move", mode='lines+markers+text', text=["", jump_label], textposition="top center", line=dict(color=jump_color, width=5), marker=dict(size=8, color=jump_color)), row=1, col=1)
-                        scan_fig.add_trace(go.Scatter(x=list(range(5)), y=best['hist_v'], name=f"Best Match Volume", line=dict(color='blue', dash='dot')), row=1, col=2)
-                        curr_ohlc = scan_results['curr_ohlc']
-                        scan_fig.add_trace(go.Candlestick(x=list(range(5)), open=curr_ohlc['Open'], high=curr_ohlc['High'], low=curr_ohlc['Low'], close=curr_ohlc['Close'], name="Current Candles"), row=1, col=3)
-                        hist_ohlc = best['hist_ohlc_scaled']
-                        scan_fig.add_trace(go.Candlestick(x=list(range(6)), open=hist_ohlc['Open'], high=hist_ohlc['High'], low=hist_ohlc['Low'], close=hist_ohlc['Close'], name="Historical Match Candles", increasing_line_color='rgba(34, 197, 94, 0.3)', decreasing_line_color='rgba(239, 68, 68, 0.3)', increasing_fillcolor='rgba(34, 197, 94, 0.1)', decreasing_fillcolor='rgba(239, 68, 68, 0.1)'), row=1, col=3)
-                        scan_fig.update_layout(height=450, template="plotly_white", showlegend=True, xaxis3_rangeslider_visible=False)
-                        st.plotly_chart(scan_fig, use_container_width=True)
-                        st.write("### 📊 Matching Summary")
-                        m_cols = st.columns(3)
-                        for i, m in enumerate(scan_results['matches']):
-                            similarity = max(0, 100 - (m['dist'] * 20)) 
-                            sim_color = "green" if similarity > 80 else "orange"
-                            jump_val_color = "green" if m['jump'] > 0 else "red"
-                            with m_cols[i]:
-                                st.markdown(f"**Match #{i+1}: {pd.to_datetime(m['date']).date()}**\n- Similarity Score: :{sim_color}[{similarity:.1f}%]\n- Historical Move: :{jump_val_color}[{m['jump']:+.1f}%]")
                         
-                        st.divider()
-                        st.subheader("✅ Scanner Accuracy Validator")
-                        if st.button("🔍 Validate Scanner Accuracy", use_container_width=True, key="adv_validate_btn"):
-                            df_temp = df.copy()
-                            df_temp['Pct_Change'] = df_temp['Close'].pct_change()
-                            events = df_temp[df_temp['Pct_Change'] >= 0.05].index.tolist() if scan_mode_val == 'bullish' else df_temp[df_temp['Pct_Change'] <= -0.05].index.tolist()
-                            winning_pats = []
-                            for b_date in events:
-                                idx = df_temp.index.get_loc(b_date)
-                                if idx < 5: continue
-                                p_data = df_temp.iloc[idx-5 : idx]
-                                winning_pats.append({'price_pattern': StandardScaler().fit_transform(p_data[['Close']]).flatten(), 'vol_pattern': StandardScaler().fit_transform(p_data[['Volume']]).flatten()})
-                            with st.spinner("Validating historical signals..."):
-                                val_results = validate_scanner_accuracy(df, winning_pats, price_threshold=min_sim, vol_threshold=70.0)
-                            if val_results:
-                                s = val_results['summary']
-                                m1, m2, m3, m4, m5, m6 = st.columns(6)
-                                m1.metric("Signals", s['Total Signals'])
-                                m2.metric("Hit Rate", f"{s['Hit Rate']:.1f}%")
-                                m3.metric("Expectancy", f"{s['Expectancy']:.2f}%")
-                                m4.metric("Avg Prof", f"+{s['Avg Profit']:.2f}%")
-                                m5.metric("Avg Loss", f"{s['Avg Loss']:.2f}%")
-                                m6.metric("RR Ratio", f"{s['RR Ratio']:.2f}")
-                                st.dataframe(val_results['log'].style.map(lambda x: 'color: green' if x == '✅ Hit' else 'color: red', subset=['Result']), use_container_width=True)
-                else:
-                    st.info("Select a stock in 'Strategy Builder' tab to see Pattern Lab.")
+                        # Final Layout Update
+                        fig.update_layout(
+                            height=650, 
+                            margin=dict(t=30, b=30, l=30, r=30), 
+                            template='plotly_dark', 
+                            xaxis_rangeslider_visible=False, 
+                            showlegend=True, 
+                            legend=dict(
+                                orientation="h", 
+                                yanchor="bottom", 
+                                y=1.02, 
+                                xanchor="right", 
+                                x=1
+                            )
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.warning(f"⚠️ ไม่สามารถดึงข้อมูลราคาของ {sel_sa_ticker} จาก Yahoo Finance ได้ในขณะนี้ กรุณาลองใหม่อีกครั้งหรือตรวจสอบ Ticker")
                 
+                # 2. Intraday Signal History Table (Below Chart)
+                st.write(f"**Intraday Signal History: {sel_sa_ticker}**")
+                st.caption("🕒 **Intraday Tracking:** แสดงประวัติสัญญาณทุกรอบเวลาที่เกิดขึ้น (Debounced 15-min)")
+                
+                # Prepare display dataframe
+                display_sa = ticker_sa[['signal_date', 'signal_time', 'score', 'scan_type', 'days_to_move', 'max_gain_t5']].copy()
+                display_sa = display_sa.rename(columns={
+                    'signal_date': 'Date',
+                    'signal_time': 'Time',
+                    'score': 'Score',
+                    'scan_type': 'Type',
+                    'days_to_move': 'Days to Move',
+                    'max_gain_t5': 'Max Gain (T+5)'
+                })
+                
+                st.dataframe(
+                    display_sa.style.format({
+                        'Max Gain (T+5)': '{:.2f}%',
+                        'Days to Move': '{:.0f}',
+                        'Score': '{:.1f}'
+                    }, na_rep='-'),
+                    use_container_width=True
+                )
+            else:
+                st.info(f"ไม่พบประวัติสัญญาณ SILENT ACCUM สำหรับ {sel_sa_ticker} ในช่วง 90 วันที่ผ่านมา")
+
+    else:
+        st.warning("ยังไม่มีข้อมูล SILENT ACCUM เพียงพอสำหรับการวิเคราะห์")
+
+
+with main_tabs[6]: # Market Scan Results (Hybrid)
+    st.info("📊 Market Scan Results (SET100)")
+    st.caption("🕒 **Hybrid View:** แสดงผลการวิเคราะห์ล่าสุดของหุ้นแต่ละตัว โดยรวมข้อมูลจากทั้งการสแกนอัตโนมัติ (Auto) และการสแกนด้วยตนเอง (Manual)")
+    
+    combined_df = fetch_market_scan_results()
+    
+    if not combined_df.empty:
+        # 1. Metric Summary
+        last_scan = combined_df['scanned_at'].max()
+        buy_count = len(combined_df[combined_df['signal'] == 'BUY'])
+        wait_count = len(combined_df[combined_df['signal'].str.contains('WAIT', na=False)])
+        
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total Stocks", len(combined_df))
+        m2.metric("BUY Signals", buy_count)
+        m3.metric("WAIT Signals", wait_count)
+        m4.metric("Latest Update", last_scan.strftime("%H:%M:%S"))
+        
+        st.divider()
+        
+        # 2. Filters
+        f1, f2, f3 = st.columns([1, 1, 2])
+        sig_options = ["ALL"] + sorted(combined_df['signal'].dropna().unique().tolist())
+        sel_sig = f1.selectbox("Filter Signal", sig_options, key="mkt_sig_filter")
+        
+        strat_options = ["ALL"] + sorted(combined_df['strategy'].dropna().unique().tolist())
+        sel_strat = f2.selectbox("Filter Strategy", strat_options, key="mkt_strat_filter")
+        
+        search_ticker = f3.text_input("🔍 Ticker Search", "", key="mkt_ticker_search").upper()
+        
+        # Apply Filters
+        filtered_mkt = combined_df.copy()
+        if sel_sig != "ALL":
+            filtered_mkt = filtered_mkt[filtered_mkt['signal'] == sel_sig]
+        if sel_strat != "ALL":
+            filtered_mkt = filtered_mkt[filtered_mkt['strategy'] == sel_strat]
+        if search_ticker:
+            filtered_mkt = filtered_mkt[filtered_mkt['ticker'].str.contains(search_ticker)]
+        
+        # 3. Display Dataframe with Styling
+        def style_mkt_scan(styler):
+            def highlight_buy(row):
+                return ['background-color: rgba(34, 197, 94, 0.15)' if row['signal'] == 'BUY' else '' for _ in row]
+            
+            styler.apply(highlight_buy, axis=1)
+            styler.format({
+                'price': '{:.2f}',
+                'close_price': '{:.2f}',
+                'change_percent': '{:+.2f}%',
+                'score': '{:.1f}',
+                'bull_score': '{:.1f}',
+                'rsi': '{:.1f}',
+                'volume': '{:,.0f}'
+            }, na_rep='N/A')
+            return styler
+
+        st.subheader(f"📋 Market Results ({len(filtered_mkt)} stocks)")
+        if not filtered_mkt.empty:
+            # Map price if needed
+            if 'price' in filtered_mkt.columns:
+                filtered_mkt['close_price'] = filtered_mkt['price']
+                
+            # Reorder columns for readability
+            display_cols = [
+                'ticker', 'signal', 'score', 'strategy', 'close_price', 
+                'change_percent', 'rsi', 'volume', 'source', 'scanned_at'
+            ]
+            actual_display = [c for c in display_cols if c in filtered_mkt.columns]
+            st.dataframe(style_mkt_scan(filtered_mkt[actual_display].style), use_container_width=True)
+        else:
+            st.warning("ไม่พบข้อมูลตามเงื่อนไขที่กรอง")
+
+        # --- NEW SECTION: Historical Signal Analysis ---
+        st.divider()
+        st.subheader("📈 Stock Historical Signal Analysis")
+        st.caption("📊 **Historical Analysis:** เจาะลึกประวัติสัญญาณเทรดและแนวโน้มราคาย้อนหลัง 90 วัน (Hybrid Data)")
+        
+        all_tickers = sorted([str(t) for t in combined_df['ticker'].dropna().unique().tolist()])
+        sel_hist_ticker = st.selectbox("เลือกหุ้นเพื่อดูประวัติสัญญาณ", all_tickers, key="mkt_hist_ticker_select")
+        
+        if sel_hist_ticker:
+            with st.spinner(f"Loading historical data for {sel_hist_ticker}..."):
+                # Fetch price data
+                hist_price_raw = get_stock_data(sel_hist_ticker)
+                if hist_price_raw is not None:
+                    # 1. Prepare Price Data
+                    hist_price = calculate_quant_indicators(hist_price_raw, 14, 10, 50)
+                    hist_price = hist_price.tail(90).copy()
+                    # Convert index to string 'YYYY-MM-DD' for exact matching
+                    hist_price['date_str'] = hist_price.index.strftime('%Y-%m-%d')
+                    
+                    # 2. Fetch & Prepare Signal Data
+                    hist_signals = fetch_ticker_combined_history(sel_hist_ticker, days=90)
+                    
+                    if not hist_signals.empty:
+                        # Standardize signal dates to 'YYYY-MM-DD' strings
+                        hist_signals['signal_date_str'] = pd.to_datetime(hist_signals['scanned_at']).dt.strftime('%Y-%m-%d')
+                        
+                        # Unify Signal Naming for Mapping (Excluding SILENT ACCUM)
+                        def clean_signal_name(row):
+                            sig = str(row.get('signal', '')).upper()
+                            strat = str(row.get('strategy', '')).upper()
+                            is_silent = bool(row.get('is_silent_accum', False))
+                            
+                            # EXCLUDE SILENT ACCUM (Moved to dedicated tab)
+                            if 'SILENT' in sig or 'SILENT' in strat or is_silent: return None
+                            
+                            if 'BUY' in sig or 'BREAKOUT' in sig: return 'BUY / BREAKOUT'
+                            if 'PULLBACK' in sig or 'RETEST' in sig or 'PIN BAR' in sig: return 'PULLBACK / PIN BAR'
+                            if 'MOMENTUM' in sig or 'VOLUME' in sig or 'RECOVERY' in sig: return 'MOMENTUM / VOL'
+                            
+                            # Default all other bearish/unknown to SELL / WARNING
+                            return 'SELL / WARNING'
+
+                        hist_signals['display_signal'] = hist_signals.apply(clean_signal_name, axis=1)
+                        
+                        # Dynamic Signal Selection Controls
+                        # Filter out None/NaN and get unique sorted list
+                        available_signals = sorted([str(s) for s in hist_signals['display_signal'].dropna().unique().tolist()])
+                        selected_display_signals = st.multiselect(
+                            "🎯 เลือกประเภทสัญญาณที่ต้องการแสดง (Multi-Signal Overlay)", 
+                            available_signals, 
+                            default=available_signals,
+                            key="hist_sig_multiselect"
+                        )
+                        
+                        # Filter signals by selected types and ticker
+                        clean_sel_ticker = sel_hist_ticker.strip().upper()
+                        base_sel_ticker = clean_sel_ticker.replace('.BK', '')
+                        hist_signals['ticker_clean'] = hist_signals['ticker'].str.strip().str.upper().str.replace('.BK', '')
+                        
+                        filtered_signals = hist_signals[
+                            (hist_signals['display_signal'].isin(selected_display_signals)) & 
+                            (hist_signals['ticker_clean'] == base_sel_ticker)
+                        ].copy()
+                        
+                        # FINAL DEDUPLICATION: Ensure 1 marker per Category per Day
+                        filtered_signals = filtered_signals.sort_values('scanned_at', ascending=True)
+                        filtered_signals = filtered_signals.drop_duplicates(
+                            subset=['signal_date_str', 'display_signal'], 
+                            keep='first'
+                        )
+                        
+                        # Print Debug Summary to Streamlit (Temporary Check)
+                        st.caption(f"🔍 DEBUG: Found {len(filtered_signals)} technical signals for {sel_hist_ticker} (Last 90 days)")
+                    else:
+                        filtered_signals = pd.DataFrame()
+                        selected_display_signals = []
+
+                    # Create Plotly Chart
+                    fig_hist = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+                    
+                    # 1. Candlestick (Use Datetime Index for X-axis)
+                    fig_hist.add_trace(go.Candlestick(
+                        x=hist_price.index,
+                        open=hist_price['Open'],
+                        high=hist_price['High'],
+                        low=hist_price['Low'],
+                        close=hist_price['Close'],
+                        name="Price"
+                    ), row=1, col=1)
+                    
+                    # 2. Add Multi-Signal Markers (Overlay using Exact Date Matching)
+                    # Optimized Color & Symbol Mapping for Technical Signals
+                    SIGNAL_STYLE = {
+                        'BUY / BREAKOUT': {'symbol': 'triangle-up', 'color': '#10b981', 'size': 14, 'label': '🟢 BUY / BREAKOUT'},
+                        'SELL / WARNING': {'symbol': 'triangle-down', 'color': '#ef4444', 'size': 14, 'label': '🔴 SELL / WARNING'},
+                        'PULLBACK / PIN BAR': {'symbol': 'diamond', 'color': '#f59e0b', 'size': 12, 'label': '🟡 PULLBACK / PIN BAR'},
+                        'MOMENTUM / VOL': {'symbol': 'square', 'color': '#a855f7', 'size': 12, 'label': '🟣 MOMENTUM / VOL'}
+                    }
+
+                    if not filtered_signals.empty:
+                        # Join signals with price data on date string to get correct OHLC positions
+                        df_markers = hist_price.merge(
+                            filtered_signals, 
+                            left_on='date_str', 
+                            right_on='signal_date_str', 
+                            how='inner'
+                        )
+                        
+                        if not df_markers.empty:
+                            # Ensure the merged dataframe has the original datetime index for plotting
+                            df_markers.index = pd.to_datetime(df_markers['date_str'])
+                            
+                            for sig_name in selected_display_signals:
+                                sig_group = df_markers[df_markers['display_signal'] == sig_name]
+                                if sig_group.empty: continue
+                                
+                                style = SIGNAL_STYLE.get(sig_name, SIGNAL_STYLE['SELL / WARNING'])
+                                
+                                # Strict Y-axis Alignment based on Signal Type
+                                y_pos = []
+                                for _, m_row in sig_group.iterrows():
+                                    # Buy-side signals -> Below candle
+                                    if sig_name in ['BUY / BREAKOUT', 'PULLBACK / PIN BAR', 'MOMENTUM / VOL']:
+                                        y_pos.append(m_row['Low'] * 0.98)
+                                    # Sell-side/Warning/Other signals -> Above candle
+                                    else:
+                                        y_pos.append(m_row['High'] * 1.02)
+                                
+                                hover_texts = []
+                                for _, m_row in sig_group.iterrows():
+                                    h_rsi = f"RSI: {m_row.get('rsi', 0):.1f}" if pd.notna(m_row.get('rsi')) else ""
+                                    h_vol = f"Vol: {m_row.get('volume', 0):,.0f}" if pd.notna(m_row.get('volume')) else ""
+                                    score = m_row.get('score', 'N/A')
+                                    
+                                    # Use specific signal name for tooltip if category is SELL / WARNING
+                                    display_title = m_row.get('signal', sig_name) if sig_name == 'SELL / WARNING' else sig_name
+                                    hover_texts.append(f"<b>{display_title}</b><br>Score: {score}<br>{h_rsi}<br>{h_vol}")
+
+                                fig_hist.add_trace(go.Scatter(
+                                    x=sig_group.index, 
+                                    y=y_pos,
+                                    mode='markers',
+                                    marker=dict(
+                                        symbol=style['symbol'], 
+                                        size=style['size'], 
+                                        color=style['color'],
+                                        line=dict(width=1, color='white') # Add white border for visibility
+                                    ),
+                                    name=style['label'],
+                                    text=hover_texts,
+                                    hovertemplate="%{text}<extra></extra>",
+                                    showlegend=True
+                                ), row=1, col=1)
+                    
+                    # 3. RSI Subplot
+                    fig_hist.add_trace(go.Scatter(
+                        x=hist_price.index, y=hist_price['RSI'],
+                        name="RSI", line=dict(color='#8b5cf6', width=2)
+                    ), row=2, col=1)
+                    
+                    fig_hist.add_hline(y=70, line_dash="dash", line_color="#ef4444", row=2, col=1)
+                    fig_hist.add_hline(y=30, line_dash="dash", line_color="#10b981", row=2, col=1)
+                    
+                    # Dark Theme Style
+                    fig_hist.update_layout(
+                        height=650,
+                        template="plotly_dark",
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        plot_bgcolor='rgba(0,0,0,0.05)',
+                        xaxis_rangeslider_visible=False,
+                        margin=dict(t=50, b=50, l=50, r=50),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                    )
+                    
+                    st.plotly_chart(fig_hist, use_container_width=True)
+                else:
+                    st.error(f"ไม่สามารถดึงข้อมูลราคาของ {sel_hist_ticker} ได้")
+    else:
+        st.info("ℹ️ ยังไม่มีข้อมูลการสแกนในระบบ (กรุณากด Run SET100 Batch Scan หรือรอระบบ Auto Scan)")
+
+with main_tabs[7]: # Advanced Tools / More Features
+    st.info("🛠️ Advanced Tools & Strategy Builder")
+    st.caption("⚙️ **Advanced Features:** รวมเครื่องมือวิเคราะห์เชิงลึก เช่น การปรับจูน Parameter ด้วย AI, ระบบทดสอบย้อนหลัง (Backtest) และห้องทดลองรูปแบบราคา (Pattern Lab)")
+    
+    # Sub-tabs for Advanced Tools
+    adv_tabs = st.tabs(["⚙️ Strategy Builder", "📈 Performance Dashboard", "🔮 Pattern Lab"])
+    
+    with adv_tabs[0]: # Strategy Builder
+        st.subheader("🛠 Quant Strategy Builder")
+        st.caption("🔧 **Strategy Builder:** ปรับแต่งเงื่อนไขการซื้อขายด้วยตัวเอง หรือให้ AI ช่วยคำนวณค่าที่เหมาะสมที่สุด (Optimizer)")
+        
+        # Initialize AI Optimization values in session state
+        if 'ai_params' not in st.session_state:
+            st.session_state['ai_params'] = None
+        
+        if 'stock_list' not in st.session_state:
+            st.session_state['stock_list'] = ["KTC.BK", "AMATA.BK", "RCL.BK", "CPF.BK"]
+        
+        col_data, col_ai = st.columns(2)
+        with col_data:
+            st.markdown("### 📥 Data Management")
+            new_ticker = st.text_input("➕ Add Ticker", "", key="adv_add_ticker").upper()
+            if new_ticker:
+                if not new_ticker.endswith(".BK") and "." not in new_ticker: new_ticker += ".BK"
+                if new_ticker not in st.session_state['stock_list']:
+                    st.session_state['stock_list'].append(new_ticker)
+            selected_ticker = st.selectbox("Select Stock", st.session_state['stock_list'], key="adv_select_ticker")
+            fetch_btn = st.button("🚀 Fetch Data", type="primary", use_container_width=True, key="adv_fetch_btn")
+        
+        if fetch_btn:
+            with st.spinner("Downloading..."):
+                df_raw_new = get_stock_data(selected_ticker)
+                if df_raw_new is not None:
+                    st.session_state['df_raw'] = df_raw_new
+                    st.session_state['active_ticker'] = selected_ticker
+                    st.rerun()
+                else:
+                    st.error("Failed to load data.")
+        
+        with col_ai:
+            st.markdown("### 🤖 AI Strategy Optimizer")
+            if 'df_raw' in st.session_state:
+                if st.button("Run AI Optimizer", use_container_width=True, key="adv_ai_btn"):
+                    if not user_api_key:
+                        st.warning("Please enter Google API Key in the sidebar.")
+                    else:
+                        current_df = calculate_quant_indicators(st.session_state['df_raw'], 14, 5, 20)
+                        _, current_stats, _ = run_backtest(current_df, 30, 70, 1.2)
+                        
+                        with st.status("AI is analyzing...", expanded=True) as status:
+                            ai_rec = get_ai_optimization(
+                                st.session_state['active_ticker'], 
+                                current_stats, 
+                                None, 
+                                {"rsi_p": 14, "rsi_b": 30, "rsi_s": 70, "ema_f": 5, "ema_s": 20, "rv_m": 1.2},
+                                user_api_key
+                            )
+                        if ai_rec:
+                            st.session_state['ai_params'] = ai_rec
+                            status.update(label="✅ AI Optimization Complete!", state="complete")
+                            st.info(f"💡 AI Recommendation: {ai_rec['reasoning']}")
+                        else:
+                            status.update(label="❌ AI Optimization Failed", state="error")
+            else:
+                st.info("Select a stock and fetch data to use AI Optimizer.")
+
+        st.divider()
+        with st.form("adv_strategy_params"):
+            st.subheader("⚙️ Buy/Sell Parameters")
+            p = st.session_state['ai_params'] if st.session_state['ai_params'] else {}
+            
+            c1, c2, c3 = st.columns(3)
+            rsi_p = c1.slider("RSI Period", 5, 30, p.get('rsi_p', 14))
+            rsi_b = c2.slider("Buy Threshold (RSI <=)", 10, 80, p.get('rsi_b', 50))
+            rsi_s = c3.slider("Sell Threshold (RSI >=)", 40, 90, p.get('rsi_s', 70))
+            
+            c4, c5, c6 = st.columns(3)
+            ema_f = c4.number_input("Fast EMA", 5, 50, p.get('ema_f', 10))
+            ema_s = c5.number_input("Slow EMA", 10, 200, p.get('ema_s', 50))
+            rv_m = c6.slider("Min Rel. Volume", 1.0, 3.0, p.get('rv_m', 1.5), 0.1)
+            
+            st.markdown("### 🔍 Scanner Settings")
+            min_sim = st.slider("Min Similarity Threshold (%)", 50, 95, 80)
+            scanner_mode = st.radio("Scanner Mode", ["Bullish (Breakout)", "Bearish (Danger Zone)"], horizontal=True)
+            
+            apply_btn = st.form_submit_button("🔄 Apply & Backtest", use_container_width=True)
+
+    with adv_tabs[1]: # Performance Dashboard
+        if 'df_raw' in st.session_state:
+            df = calculate_quant_indicators(st.session_state['df_raw'], rsi_p, ema_f, ema_s)
+            trade_log, stats, equity_curve = run_backtest(df, rsi_b, rsi_s, rv_m)
+            
+            st.title(f"📈 {st.session_state['active_ticker']} Strategy Station")
+            
+            # Volatility Guard Alert
+            atr_now = df['ATR'].iloc[-1]
+            atr_avg5 = df['ATR_Avg_5'].iloc[-1]
+            if atr_now > (atr_avg5 * 1.2):
+                st.warning(f"⚠️ **High Volatility Alert**: ATR ({atr_now:.2f}) is 20%+ above 5-day average ({atr_avg5:.2f}). Exercise caution!")
+            
+            # 1. Performance Metrics
+            if stats and 'Total Return (%)' in stats:
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Total Return", f"{stats['Total Return (%)']:.2f}%")
+                m2.metric("Win Rate", f"{stats['Win Rate (%)']:.1f}%")
+                m3.metric("Max Drawdown", f"-{stats['Max Drawdown (%)']:.2f}%", delta_color="inverse")
+                m4.metric("Total Trades", stats['Total Trades'])
+            
+            # 2. Main Chart
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+            fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price"), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df['EMA_Fast'], name=f"EMA {ema_f}", line=dict(color='orange', width=1)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df['EMA_Slow'], name=f"EMA {ema_s}", line=dict(color='blue', width=1)), row=1, col=1)
+            if trade_log is not None:
+                fig.add_trace(go.Scatter(x=trade_log['Entry Date'], y=trade_log['Entry Price'], mode='markers', marker=dict(symbol='triangle-up', size=12, color='green'), name='Buy'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=trade_log['Exit Date'], y=trade_log['Exit Price'], mode='markers', marker=dict(symbol='triangle-down', size=12, color='red'), name='Sell'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], name="RSI", line=dict(color='purple')), row=2, col=1)
+            fig.add_hline(y=rsi_s, line_dash="dash", line_color="red", row=2, col=1)
+            fig.add_hline(y=rsi_b, line_dash="dash", line_color="green", row=2, col=1)
+            fig.update_layout(height=600, template="plotly_white", xaxis_rangeslider_visible=False)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # 3. DTW Projection Chart
+            st.subheader("🔮 Pattern Matching Projection (Next 20 Days)")
+            projections = get_dtw_projection(df)
+            if projections:
+                proj_fig = go.Figure()
+                last_40 = df['Close'].iloc[-40:]
+                proj_fig.add_trace(go.Scatter(x=list(range(-40, 0)), y=last_40.values, name="Actual Price", line=dict(color='black', width=3)))
+                colors = ['rgba(34, 197, 94, 0.6)', 'rgba(59, 130, 246, 0.6)', 'rgba(168, 85, 247, 0.6)']
+                for i, p in enumerate(projections):
+                    proj_fig.add_trace(go.Scatter(x=list(range(0, 20)), y=p['path'], name=f"Match {i+1} ({p['date_range']})", line=dict(dash='dot', color=colors[i])))
+                proj_fig.update_layout(height=400, template="plotly_white", xaxis_title="Days from Today", yaxis_title="Price")
+                st.plotly_chart(proj_fig, use_container_width=True)
+            
+            # 4. Trade Log & Equity Curve
+            c_log, c_eq = st.columns([0.6, 0.4])
+            with c_log:
+                st.subheader("📜 Detailed Trade Log")
+                if trade_log is not None:
+                    st.dataframe(trade_log.style.format({'Profit (%)': '{:.2f}%', 'Entry Price': '{:.2f}', 'Exit Price': '{:.2f}'}), use_container_width=True)
+                else:
+                    st.info("No trades executed with current parameters.")
+            with c_eq:
+                st.subheader("📈 Equity Growth")
+                if equity_curve is not None:
+                    eq_fig = go.Figure()
+                    eq_fig.add_trace(go.Scatter(x=equity_curve['Trade'], y=equity_curve['Equity'], fill='tozeroy', line=dict(color='green')))
+                    eq_fig.update_layout(height=350, template="plotly_white", title="Capital: 100k Base")
+                    st.plotly_chart(eq_fig, use_container_width=True)
+        else:
+            st.info("Select a stock in 'Strategy Builder' tab to see performance.")
+
+    with adv_tabs[2]: # Pattern Lab
+        if 'df_raw' in st.session_state:
+            mode_label = "🚀 Pre-Breakout Pattern Scanner" if scanner_mode == "Bullish (Breakout)" else "🚩 Danger Zone Scanner"
+            st.subheader(f"{mode_label} (Last 5 Days vs History)")
+            scan_mode_val = 'bullish' if scanner_mode == "Bullish (Breakout)" else 'bearish'
+            with st.spinner(f"Scanning for historical patterns..."):
+                scan_results = get_pre_breakout_scanner(df, mode=scan_mode_val)
+            if scan_results:
+                scan_fig = make_subplots(rows=1, cols=3, subplot_titles=("Price Pattern Similarity", "Volume Flow Similarity", "Candlestick Comparison"), column_widths=[0.3, 0.3, 0.4])
+                main_color = 'green' if scan_mode_val == 'bullish' else 'red'
+                jump_color = 'lime' if scan_mode_val == 'bullish' else 'crimson'
+                scan_fig.add_trace(go.Scatter(x=list(range(5)), y=scan_results['curr_p'], name="Current Price", line=dict(color='black', width=3)), row=1, col=1)
+                scan_fig.add_trace(go.Scatter(x=list(range(5)), y=scan_results['curr_v'], name="Current Volume", line=dict(color='gray', width=3, dash='dash')), row=1, col=2)
+                best = scan_results['matches'][0]
+                scan_fig.add_trace(go.Scatter(x=list(range(5)), y=best['hist_p'], name=f"Best Match History ({pd.to_datetime(best['date']).date()})", line=dict(color=main_color, dash='dot')), row=1, col=1)
+                jump_label = f"{best['jump']:+.1f}%"
+                scan_fig.add_trace(go.Scatter(x=[4, 5], y=[best['hist_p_ext'][4], best['hist_p_ext'][5]], name="Historical Move", mode='lines+markers+text', text=["", jump_label], textposition="top center", line=dict(color=jump_color, width=5), marker=dict(size=8, color=jump_color)), row=1, col=1)
+                scan_fig.add_trace(go.Scatter(x=list(range(5)), y=best['hist_v'], name=f"Best Match Volume", line=dict(color='blue', dash='dot')), row=1, col=2)
+                curr_ohlc = scan_results['curr_ohlc']
+                scan_fig.add_trace(go.Candlestick(x=list(range(5)), open=curr_ohlc['Open'], high=curr_ohlc['High'], low=curr_ohlc['Low'], close=curr_ohlc['Close'], name="Current Candles"), row=1, col=3)
+                hist_ohlc = best['hist_ohlc_scaled']
+                scan_fig.add_trace(go.Candlestick(x=list(range(6)), open=hist_ohlc['Open'], high=hist_ohlc['High'], low=hist_ohlc['Low'], close=hist_ohlc['Close'], name="Historical Match Candles", increasing_line_color='rgba(34, 197, 94, 0.3)', decreasing_line_color='rgba(239, 68, 68, 0.3)', increasing_fillcolor='rgba(34, 197, 94, 0.1)', decreasing_fillcolor='rgba(239, 68, 68, 0.1)'), row=1, col=3)
+                scan_fig.update_layout(height=450, template="plotly_white", showlegend=True, xaxis3_rangeslider_visible=False)
+                st.plotly_chart(scan_fig, use_container_width=True)
+                st.write("### 📊 Matching Summary")
+                m_cols = st.columns(3)
+                for i, m in enumerate(scan_results['matches']):
+                    similarity = max(0, 100 - (m['dist'] * 20)) 
+                    sim_color = "green" if similarity > 80 else "orange"
+                    jump_val_color = "green" if m['jump'] > 0 else "red"
+                    with m_cols[i]:
+                        st.markdown(f"**Match #{i+1}: {pd.to_datetime(m['date']).date()}**\n- Similarity Score: :{sim_color}[{similarity:.1f}%]\n- Historical Move: :{jump_val_color}[{m['jump']:+.1f}%]")
+                
+                st.divider()
+                st.subheader("✅ Scanner Accuracy Validator")
+                if st.button("🔍 Validate Scanner Accuracy", use_container_width=True, key="adv_validate_btn"):
+                    df_temp = df.copy()
+                    df_temp['Pct_Change'] = df_temp['Close'].pct_change()
+                    events = df_temp[df_temp['Pct_Change'] >= 0.05].index.tolist() if scan_mode_val == 'bullish' else df_temp[df_temp['Pct_Change'] <= -0.05].index.tolist()
+                    winning_pats = []
+                    for b_date in events:
+                        idx = df_temp.index.get_loc(b_date)
+                        if idx < 5: continue
+                        p_data = df_temp.iloc[idx-5 : idx]
+                        winning_pats.append({'price_pattern': StandardScaler().fit_transform(p_data[['Close']]).flatten(), 'vol_pattern': StandardScaler().fit_transform(p_data[['Volume']]).flatten()})
+                    with st.spinner("Validating historical signals..."):
+                        val_results = validate_scanner_accuracy(df, winning_pats, price_threshold=min_sim, vol_threshold=70.0)
+                    if val_results:
+                        s = val_results['summary']
+                        m1, m2, m3, m4, m5, m6 = st.columns(6)
+                        m1.metric("Signals", s['Total Signals'])
+                        m2.metric("Hit Rate", f"{s['Hit Rate']:.1f}%")
+                        m3.metric("Expectancy", f"{s['Expectancy']:.2f}%")
+                        m4.metric("Avg Prof", f"+{s['Avg Profit']:.2f}%")
+                        m5.metric("Avg Loss", f"{s['Avg Loss']:.2f}%")
+                        m6.metric("RR Ratio", f"{s['RR Ratio']:.2f}")
+                        st.dataframe(val_results['log'].style.map(lambda x: 'color: green' if x == '✅ Hit' else 'color: red', subset=['Result']), use_container_width=True)
+        else:
+            st.info("Select a stock in 'Strategy Builder' tab to see Pattern Lab.")
+        
 # --- End of Application ---
 
