@@ -2568,87 +2568,101 @@ with main_tabs[5]: # SILENT ACCUM Insight
             if ticker_sa is not None and not ticker_sa.empty:
                 # 1. Price Chart with SILENT ACCUM Markers (Full Width)
                 st.write(f"**Price Chart with SILENT ACCUM Markers: {sel_sa_ticker}**")
-                # ... (Rest of the chart logic stays same as it uses normalized dates for markers)
-                # ...
-                # (I will keep the chart code as it was in my previous successful edit)
-                with st.spinner(f"ดึงข้อมูลกราฟสำหรับ {sel_sa_ticker}..."):
-                    hist_price_raw = get_stock_data(sel_sa_ticker)
-                    
-                    if hist_price_raw is not None and not hist_price_raw.empty:
-                        # Standardize for plotting (Last 180 days)
-                        df_plot = hist_price_raw.tail(180).copy()
-                        # Ensure index is naive datetime for Plotly and marker alignment
-                        if df_plot.index.tz is not None:
-                            df_plot.index = df_plot.index.tz_convert(SET_TZ).tz_localize(None)
+                
+                try:
+                    with st.spinner(f"ดึงข้อมูลกราฟสำหรับ {sel_sa_ticker}..."):
+                        # Implement Auto Suffix Retry / Fallback (Safe Data Fetching)
+                        hist_price_raw = None
+                        tickers_to_try = [sel_sa_ticker]
                         
-                        # 1. Create Subplots: Price (Candlestick) + Volume
-                        fig = make_subplots(
-                            rows=2, cols=1, 
-                            shared_xaxes=True, 
-                            vertical_spacing=0.05, 
-                            row_heights=[0.7, 0.3]
-                        )
+                        # If .BK failed, try without .BK (or vice-versa)
+                        if sel_sa_ticker.endswith('.BK'):
+                            tickers_to_try.append(sel_sa_ticker.replace('.BK', ''))
+                        else:
+                            tickers_to_try.append(f"{sel_sa_ticker}.BK")
+                            
+                        for t_sym in tickers_to_try:
+                            hist_price_raw = get_stock_data(t_sym)
+                            if hist_price_raw is not None and not hist_price_raw.empty:
+                                break
                         
-                        # Candlestick
-                        fig.add_trace(go.Candlestick(
-                            x=df_plot.index, 
-                            open=df_plot['Open'], 
-                            high=df_plot['High'], 
-                            low=df_plot['Low'], 
-                            close=df_plot['Close'], 
-                            name='Price'
-                        ), row=1, col=1)
-                        
-                        # Volume
-                        fig.add_trace(go.Bar(
-                            x=df_plot.index, 
-                            y=df_plot['Volume'], 
-                            name='Volume', 
-                            marker_color='rgba(100, 100, 100, 0.5)'
-                        ), row=2, col=1)
-                        
-                        # 2. Add SILENT ACCUM Markers (Pin to Low Price)
-                        # Alignment: Convert signal dates to naive date objects for comparison
-                        sig_dates = pd.to_datetime(ticker_sa['signal_date']).dt.date.unique().tolist()
-                        df_plot_dates = df_plot.index.date
-                        
-                        # Filter rows in df_plot that match a signal date
-                        marker_mask = [d in sig_dates for d in df_plot_dates]
-                        markers = df_plot[marker_mask].copy()
-                        
-                        if not markers.empty:
-                            fig.add_trace(go.Scatter(
-                                x=markers.index, 
-                                y=markers['Low'] * 0.98, 
-                                mode='markers', 
-                                marker=dict(
-                                    symbol='triangle-up', 
-                                    size=15, 
-                                    color='#3b82f6', 
-                                    line=dict(width=2, color='white')
-                                ), 
-                                name='SILENT ACCUM Signal', 
-                                hovertemplate='<b>SILENT ACCUM</b><br>Date: %{x}<br>Price: %{y:.2f}'
-                            ), row=1, col=1)
-                        
-                        # Final Layout Update
-                        fig.update_layout(
-                            height=650, 
-                            margin=dict(t=30, b=30, l=30, r=30), 
-                            template='plotly_dark', 
-                            xaxis_rangeslider_visible=False, 
-                            showlegend=True, 
-                            legend=dict(
-                                orientation="h", 
-                                yanchor="bottom", 
-                                y=1.02, 
-                                xanchor="right", 
-                                x=1
+                        if hist_price_raw is not None and not hist_price_raw.empty:
+                            # Standardize for plotting (Last 180 days)
+                            df_plot = hist_price_raw.tail(180).copy()
+                            # Ensure index is naive datetime for Plotly and marker alignment
+                            if df_plot.index.tz is not None:
+                                df_plot.index = df_plot.index.tz_convert(SET_TZ).tz_localize(None)
+                            
+                            # 1. Create Subplots: Price (Candlestick) + Volume
+                            fig = make_subplots(
+                                rows=2, cols=1, 
+                                shared_xaxes=True, 
+                                vertical_spacing=0.05, 
+                                row_heights=[0.7, 0.3]
                             )
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                    else:
-                        st.warning(f"⚠️ ไม่สามารถดึงข้อมูลราคาของ {sel_sa_ticker} จาก Yahoo Finance ได้ในขณะนี้ กรุณาลองใหม่อีกครั้งหรือตรวจสอบ Ticker")
+                            
+                            # Candlestick
+                            fig.add_trace(go.Candlestick(
+                                x=df_plot.index, 
+                                open=df_plot['Open'], 
+                                high=df_plot['High'], 
+                                low=df_plot['Low'], 
+                                close=df_plot['Close'], 
+                                name='Price'
+                            ), row=1, col=1)
+                            
+                            # Volume
+                            fig.add_trace(go.Bar(
+                                x=df_plot.index, 
+                                y=df_plot['Volume'], 
+                                name='Volume', 
+                                marker_color='rgba(100, 100, 100, 0.5)'
+                            ), row=2, col=1)
+                            
+                            # 2. Add SILENT ACCUM Markers (Pin to Low Price)
+                            # Alignment: Convert signal dates to naive date objects for comparison
+                            sig_dates = pd.to_datetime(ticker_sa['signal_date']).dt.date.unique().tolist()
+                            df_plot_dates = df_plot.index.date
+                            
+                            # Filter rows in df_plot that match a signal date
+                            marker_mask = [d in sig_dates for d in df_plot_dates]
+                            markers = df_plot[marker_mask].copy()
+                            
+                            if not markers.empty:
+                                fig.add_trace(go.Scatter(
+                                    x=markers.index, 
+                                    y=markers['Low'] * 0.98, 
+                                    mode='markers', 
+                                    marker=dict(
+                                        symbol='triangle-up', 
+                                        size=15, 
+                                        color='#3b82f6', 
+                                        line=dict(width=2, color='white')
+                                    ), 
+                                    name='SILENT ACCUM Signal', 
+                                    hovertemplate='<b>SILENT ACCUM</b><br>Date: %{x}<br>Price: %{y:.2f}'
+                                ), row=1, col=1)
+                            
+                            # Final Layout Update
+                            fig.update_layout(
+                                height=650, 
+                                margin=dict(t=30, b=30, l=30, r=30), 
+                                template='plotly_dark', 
+                                xaxis_rangeslider_visible=False, 
+                                showlegend=True, 
+                                legend=dict(
+                                    orientation="h", 
+                                    yanchor="bottom", 
+                                    y=1.02, 
+                                    xanchor="right", 
+                                    x=1
+                                )
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.warning(f"⚠️ ไม่สามารถดึงข้อมูลราคาของ {sel_sa_ticker} จาก Yahoo Finance ได้ในขณะนี้ กรุณาลองใหม่อีกครั้งหรือตรวจสอบ Ticker")
+                except Exception as chart_err:
+                    st.error(f"❌ เกิดข้อผิดพลาดในการสร้างกราฟของ {sel_sa_ticker}: {str(chart_err)}")
                 
                 # 2. Intraday Signal History Table (Below Chart)
                 st.write(f"**Intraday Signal History: {sel_sa_ticker}**")
