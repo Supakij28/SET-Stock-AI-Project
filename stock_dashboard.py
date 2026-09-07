@@ -2139,53 +2139,76 @@ with main_tabs[0]: # Smart Pattern Radar
                 selected_ticker = st.selectbox("เลือกหุ้นเพื่อดูแผนเทรด (Trade Plan):", df_radar['ticker'].unique(), key="radar_ticker")
                 
                 if selected_ticker:
-                    ticker_row = df_radar[df_radar['ticker'] == selected_ticker].iloc[0]
-                    entry_price = ticker_row['close_price']
-                    
-                    # Fetch price data for ATR and Chart
-                    df_full = get_stock_data(selected_ticker)
-                    if df_full is not None and not df_full.empty:
-                        df_full = calculate_quant_indicators(df_full)
-                        atr = df_full['ATR'].iloc[-1]
+                    try:
+                        ticker_row = df_radar[df_radar['ticker'] == selected_ticker].iloc[0]
+                        entry_price = float(ticker_row['close_price'])
                         
-                        # Plan Levels
-                        stop_loss = entry_price - (atr * 2)
-                        risk = entry_price - stop_loss
-                        target = entry_price + (risk * 2)
+                        # Fetch price data with Suffix Fallback (Safe Data Fetching)
+                        df_full = None
+                        tickers_to_try = [selected_ticker]
                         
-                        # Limit to last 90 days for chart display
-                        df_chart = df_full.tail(90).copy()
+                        # If .BK failed, try without .BK (or vice-versa)
+                        if selected_ticker.endswith('.BK'):
+                            tickers_to_try.append(selected_ticker.replace('.BK', ''))
+                        else:
+                            tickers_to_try.append(f"{selected_ticker}.BK")
+                            
+                        for t_sym in tickers_to_try:
+                            df_full = get_stock_data(t_sym)
+                            if df_full is not None and not df_full.empty:
+                                break
                         
-                        # Layout Metrics
-                        m1, m2, m3 = st.columns(3)
-                        m1.metric("Entry Price", f"{entry_price:.2f}")
-                        m2.metric("Stop Loss (2*ATR)", f"{stop_loss:.2f}", delta=f"{(stop_loss/entry_price-1)*100:.1f}%", delta_color="inverse")
-                        m3.metric("Target Price (R:R 1:2)", f"{target:.2f}", delta=f"{(target/entry_price-1)*100:.1f}%")
-                        
-                        # Plotly Chart
-                        fig = go.Figure()
-                        fig.add_trace(go.Candlestick(
-                            x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
-                            low=df_chart['Low'], close=df_chart['Close'], name="Price"
-                        ))
-                        
-                        # Add Plan Lines
-                        fig.add_hline(y=entry_price, line_dash="dash", line_color="blue", annotation_text="Entry")
-                        fig.add_hline(y=stop_loss, line_dash="dash", line_color="red", annotation_text="Stop Loss")
-                        fig.add_hline(y=target, line_dash="dash", line_color="green", annotation_text="Target (1:2)")
-                        
-                        # Auto-fit Y-Axis Scale based on levels and recent prices
-                        y_min = min(df_chart['Low'].min(), stop_loss) * 0.95
-                        y_max = max(df_chart['High'].max(), target) * 1.05
-                        
-                        fig.update_layout(
-                            title=f"Trade Plan: {selected_ticker} (Last 90 Days)", 
-                            height=550, 
-                            template="plotly_dark",
-                            yaxis=dict(range=[y_min, y_max], fixedrange=False),
-                            xaxis=dict(rangeslider=dict(visible=False))
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
+                        if df_full is not None and not df_full.empty:
+                            df_full = calculate_quant_indicators(df_full)
+                            
+                            # Robust Indicator & Level Calculations
+                            last_atr = df_full['ATR'].iloc[-1]
+                            # Fallback if ATR is NaN: Use 3% of entry price
+                            if pd.isna(last_atr) or last_atr <= 0:
+                                last_atr = entry_price * 0.03
+                            
+                            # Ensure levels are floats
+                            stop_loss = float(entry_price - (last_atr * 2))
+                            risk = float(entry_price - stop_loss)
+                            target = float(entry_price + (risk * 2))
+                            
+                            # Limit to last 90 days for chart display
+                            df_chart = df_full.tail(90).copy()
+                            
+                            # Layout Metrics
+                            m1, m2, m3 = st.columns(3)
+                            m1.metric("Entry Price", f"{entry_price:.2f}")
+                            m2.metric("Stop Loss (2*ATR)", f"{stop_loss:.2f}", delta=f"{(stop_loss/entry_price-1)*100:.1f}%", delta_color="inverse")
+                            m3.metric("Target Price (R:R 1:2)", f"{target:.2f}", delta=f"{(target/entry_price-1)*100:.1f}%")
+                            
+                            # Plotly Chart Construction
+                            fig = go.Figure()
+                            fig.add_trace(go.Candlestick(
+                                x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
+                                low=df_chart['Low'], close=df_chart['Close'], name="Price"
+                            ))
+                            
+                            # Add Plan Lines (Strictly float values)
+                            fig.add_hline(y=float(entry_price), line_dash="dash", line_color="blue", annotation_text="Entry")
+                            fig.add_hline(y=float(stop_loss), line_dash="dash", line_color="red", annotation_text="Stop Loss")
+                            fig.add_hline(y=float(target), line_dash="dash", line_color="green", annotation_text="Target (1:2)")
+                            
+                            # Auto-fit Y-Axis Scale
+                            y_min = float(min(df_chart['Low'].min(), stop_loss) * 0.95)
+                            y_max = float(max(df_chart['High'].max(), target) * 1.05)
+                            
+                            fig.update_layout(
+                                title=f"Trade Plan: {selected_ticker} (Last 90 Days)", 
+                                height=550, 
+                                template="plotly_dark",
+                                yaxis=dict(range=[y_min, y_max], fixedrange=False),
+                                xaxis=dict(rangeslider=dict(visible=False))
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.warning(f"⚠️ ไม่พบข้อมูลราคาย้อนหลังสำหรับ {selected_ticker} (โปรดตรวจสอบการเชื่อมต่อ Yahoo Finance)")
+                    except Exception as e:
+                        st.error(f"❌ เกิดข้อผิดพลาดในการสร้างกราฟของ {selected_ticker}: {str(e)}")
             else:
                 st.warning("ไม่พบหุ้นที่เข้าเกณฑ์การวิเคราะห์ในขณะนี้")
         else:
