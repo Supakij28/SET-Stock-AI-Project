@@ -62,46 +62,83 @@ def get_supabase_client() -> Client:
     return create_client(url, key)
 
 # --- Initialization & Authentication Flow ---
-# Wrap system initialization in a spinner and delay Auth UI
-with st.spinner("Initializing system, please wait..."):
-    # 1. Initialize Database Connection
-    supabase = get_supabase_client()
+def check_password():
+    """Returns True if the user has the correct password."""
     
-    # 2. Define Authentication Logic
-    def check_password():
-        # 1. ถ้าผ่านการล็อกอินอยู่แล้ว ให้ให้ผ่านทันที
-        if st.session_state.get("password_correct", False):
-            return True
+    # 1. ถ้าผ่านการล็อกอินอยู่แล้วใน Session นี้ ให้ผ่านทันที
+    if st.session_state.get("authenticated", False):
+        return True
 
-        # 2. ฟังก์ชันตรวจสอบเมื่อมีการกด Enter/ส่งข้อมูลในช่องรหัสผ่าน
-        def password_entered():
-            user_input = str(st.session_state.get("password_input", "")).strip()
-            target_password = str(st.secrets.get("APP_PASSWORD", os.getenv("APP_PASSWORD", "admin1234"))).strip()
-            
-            if user_input == target_password:
-                st.session_state["password_correct"] = True
-                st.session_state["password_error"] = False
-            else:
-                st.session_state["password_correct"] = False
-                st.session_state["password_error"] = True
+    # 2. ฟังก์ชันตรวจสอบความพร้อมของ Secrets (Streamlit Cloud Wake-up handling)
+    secrets_ready = False
+    target_password = None
+    
+    try:
+        # พยายามดึงค่าจาก st.secrets
+        if "APP_PASSWORD" in st.secrets:
+            target_password = st.secrets["APP_PASSWORD"]
+            secrets_ready = True
+    except Exception:
+        # กรณี st.secrets ยังไม่พร้อม (waking up)
+        secrets_ready = False
 
-        # 3. แสดงฟอร์มกรอกรหัสผ่าน
-        st.text_input(
-            "Please enter the access password",
-            type="password",
-            on_change=password_entered,
-            key="password_input"
-        )
-        
-        # 4. แสดง Error Message เฉพาะกรณีที่พิมพ์ผิดจริงๆ เท่านั้น
-        if st.session_state.get("password_error", False):
-            st.error("😕 Password incorrect")
-            
+    # กรณีรัน Local หรือ Secrets ไม่มีค่า ให้ดึงจาก Environment Variable
+    if not secrets_ready or not target_password:
+        target_password = os.getenv("APP_PASSWORD")
+        if target_password:
+            secrets_ready = True
+
+    # 3. หากระบบยังโหลด Secrets ไม่สำเร็จ (เช่น ช่วง Wake up)
+    if not secrets_ready:
+        st.warning("⚠️ กำลังเชื่อมต่อกับระบบความปลอดภัย...")
+        st.spinner("⏳ กำลังโหลดคอนฟิกระบบ กรุณารอสักครู่...")
+        if st.button("🔄 โหลดหน้าใหม่อีกครั้ง", key="refresh_auth"):
+            st.rerun()
         return False
 
-# 3. Block main app rendering until authenticated
+    # 4. ฟังก์ชันตรวจสอบรหัสผ่านเมื่อมีการ Submit
+    def password_entered():
+        user_input = str(st.session_state.get("password_input", "")).strip()
+        # ป้องกันการเช็กกับค่าว่างหรือ None
+        safe_target = str(target_password).strip() if target_password else ""
+        
+        if safe_target and user_input == safe_target:
+            st.session_state["authenticated"] = True
+            st.session_state["password_error"] = False
+            # ลบค่ารหัสผ่านออกจาก session state เพื่อความปลอดภัย
+            del st.session_state["password_input"]
+        else:
+            st.session_state["authenticated"] = False
+            st.session_state["password_error"] = True
+
+    # 5. แสดงฟอร์มกรอกรหัสผ่าน
+    st.markdown("### 🔒 กรุณาระบุรหัสผ่านเพื่อเข้าใช้งาน")
+    st.text_input(
+        "Access Password",
+        type="password",
+        on_change=password_entered,
+        key="password_input",
+        help="ป้อนรหัสผ่านที่ได้รับจากผู้ดูแลระบบ"
+    )
+    
+    # แสดง Error เฉพาะเมื่อกรอกผิด
+    if st.session_state.get("password_error", False):
+        st.error("😕 รหัสผ่านไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง")
+        
+    # เมื่อล็อกอินสำเร็จ ให้สั่ง Rerun ทันทีเพื่อให้ Dashboard แสดงผล
+    if st.session_state.get("authenticated", False):
+        st.rerun()
+        
+    return False
+
+# 1. Block main app rendering until authenticated
 if not check_password():
     st.stop()
+
+# 2. System Initialization (After login)
+with st.spinner("Initializing system, please wait..."):
+    # Initialize Database Connection
+    supabase = get_supabase_client()
 
 def init_db():
     """Verify Supabase connection."""
