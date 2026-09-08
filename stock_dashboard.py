@@ -2542,18 +2542,51 @@ with main_tabs[4]: # Admin & History
     
     # Formatting and Styling for Export
     def style_batch(styler):
+        # Safe column check for highlight_best
         def highlight_best(row):
             styles = [''] * len(row)
-            if 'BUY' in str(row['Signal']): styles = ['background-color: rgba(34, 197, 94, 0.2)'] * len(row)
-            elif row['Bearish Score (%)'] > 85: styles = ['background-color: rgba(239, 68, 68, 0.2)'] * len(row)
+            try:
+                if 'Signal' in row.index and 'BUY' in str(row['Signal']): 
+                    styles = ['background-color: rgba(34, 197, 94, 0.2)'] * len(row)
+                elif 'Bearish Score (%)' in row.index and row['Bearish Score (%)'] > 85: 
+                    styles = ['background-color: rgba(239, 68, 68, 0.2)'] * len(row)
+            except:
+                pass
             return styles
+            
         styler.apply(highlight_best, axis=1)
-        styler.map(lambda x: 'color: lime; font-weight: bold' if 'BUY' in str(x) else ('color: red; font-weight: bold' if x == 'SELL' else 'color: gray'), subset=['Signal'])
-        styler.format({'Last Price': '{:.2f}', '% Change': '{:+.2f}%', 'Relative Vol': '{:.2f}x', 'MTF Score': '{:.0f}', 'Pattern Consensus (%)': '{:.1f}%', 'Bullish Score (%)': '{:.1f}%', 'Bearish Score (%)': '{:.1f}%', 'Score Diff': '{:.1f}'})
+        
+        # Safe Subset Alignment for Pandas Styler
+        if 'Signal' in styler.data.columns:
+            styler.map(lambda x: 'color: lime; font-weight: bold' if 'BUY' in str(x) else ('color: red; font-weight: bold' if x == 'SELL' else 'color: gray'), subset=['Signal'])
+        
+        # Safe formatting
+        format_dict = {
+            'Last Price': '{:.2f}', 
+            '% Change': '{:+.2f}%', 
+            'Relative Vol': '{:.2f}x', 
+            'MTF Score': '{:.0f}', 
+            'Pattern Consensus (%)': '{:.1f}%', 
+            'Bullish Score (%)': '{:.1f}%', 
+            'Bearish Score (%)': '{:.1f}%', 
+            'Score Diff': '{:.1f}'
+        }
+        # Filter only existing columns
+        safe_format = {k: v for k, v in format_dict.items() if k in styler.data.columns}
+        if safe_format:
+            styler.format(safe_format)
+            
         return styler
 
-    styled_export = style_batch(display_df.style)
-    html_buffer = styled_export.to_html()
+    # Graceful HTML Export Fallback
+    html_buffer = ""
+    try:
+        styled_export = style_batch(display_df.style)
+        html_buffer = styled_export.to_html()
+    except Exception as e:
+        # Fallback to plain HTML if styling fails
+        html_buffer = display_df.to_html()
+        st.caption(f"⚠️ Export styling failed, showing plain table. Error: {e}")
     
     ex1.checkbox("📸 Full-Length View (For PDF)", key="admin_full_view")
     
