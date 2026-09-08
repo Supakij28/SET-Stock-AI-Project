@@ -1949,6 +1949,14 @@ if run_set100 or run_historical:
     }
     st.rerun() # Refresh to clean up scanning status and display results from state
 
+# --- Session State Data Loading ---
+# Initialize defaults to prevent NameError in tabs
+batch_df = pd.DataFrame()
+pos_count = 0
+neg_count = 0
+is_hist = False
+regime = "NEUTRAL"
+
 if st.session_state['batch_results'] is not None:
     res = st.session_state['batch_results']
     batch_df = res['df']
@@ -2265,85 +2273,96 @@ with main_tabs[0]: # Smart Pattern Radar
         st.info(f"💡 Smart Pattern Radar กำลังเตรียมความพร้อม หรือไม่พบข้อมูลในขณะนี้: {e}")
 
 with main_tabs[1]: # Unified Report
-    if not is_hist:
-        st.info("สรุปผลการวิเคราะห์เชิงปริมาณ (Search + Analyze + Persistence + Backtest)")
-        st.caption("🔍 **ระบบคัดกรองอัจฉริยะ:** รวม 3 กลยุทธ์ใหม่ (1) **Volume Compression** ตรวจจับวอลุ่มแห้งก่อนระเบิด (2) **Sector Flow Filter** คัดเฉพาะหุ้นที่แข็งแกร่งกว่ากลุ่ม (SRS) และ (3) **Dynamic Stop Loss** ปรับตามความผันผวนจริง (ATR)")
-        unified_df = generate_unified_report(batch_df, regime)
-
-        if not unified_df.empty:
-            # Sorting: High Conviction first, then positive signals
-            high_strength = unified_df[unified_df['Conviction_Score'] >= 40].copy()
-            pos_signals = ['BUY', 'GOLDEN BUY', 'PRE-FLY', 'PIN BAR (SUPPORT)', 'SILENT ACCUM']
-            early_birds = unified_df[(unified_df['Conviction_Score'] < 40) & (unified_df['Signal'].isin(pos_signals))].copy()
-            top_conviction = pd.concat([high_strength, early_birds]).head(20)
+    try:
+        # Safe check for is_hist (already initialized as False above)
+        if not is_hist:
+            st.info("สรุปผลการวิเคราะห์เชิงปริมาณ (Search + Analyze + Persistence + Backtest)")
+            st.caption("🔍 **ระบบคัดกรองอัจฉริยะ:** รวม 3 กลยุทธ์ใหม่ (1) **Volume Compression** ตรวจจับวอลุ่มแห้งก่อนระเบิด (2) **Sector Flow Filter** คัดเฉพาะหุ้นที่แข็งแกร่งกว่ากลุ่ม (SRS) และ (3) **Dynamic Stop Loss** ปรับตามความผันผวนจริง (ATR)")
             
-            if not top_conviction.empty:
-                st.success(f"🔥 พบหุ้นน่าสนใจ {len(top_conviction)} ตัว (จัดลำดับตามคะแนนและความมั่นใจ)")
+            # Ensure batch_df is available
+            if not batch_df.empty:
+                unified_df = generate_unified_report(batch_df, regime)
                 
-                for idx, (i, row) in enumerate(top_conviction.iterrows()):
-                    is_early_bird = row['Conviction_Score'] < 40
+                if not unified_df.empty:
+                    # Sorting: High Conviction first, then positive signals
+                    high_strength = unified_df[unified_df['Conviction_Score'] >= 40].copy()
+                    pos_signals = ['BUY', 'GOLDEN BUY', 'PRE-FLY', 'PIN BAR (SUPPORT)', 'SILENT ACCUM']
+                    early_birds = unified_df[(unified_df['Conviction_Score'] < 40) & (unified_df['Signal'].isin(pos_signals))].copy()
+                    top_conviction = pd.concat([high_strength, early_birds]).head(20)
                     
-                    # Dot & Label Logic
-                    if is_early_bird:
-                        dot_color = "#10b981" # Emerald
-                        s_label = "EARLY ENTRY"
-                    else:
-                        dot_color = "#3b82f6" if "SWING" in row['Strategy'] else "#f59e0b"
-                        s_label = row['Strategy']
+                    if not top_conviction.empty:
+                        st.success(f"🔥 พบหุ้นน่าสนใจ {len(top_conviction)} ตัว (จัดลำดับตามคะแนนและความมั่นใจ)")
+                        
+                        for idx, (i, row) in enumerate(top_conviction.iterrows()):
+                            is_early_bird = row['Conviction_Score'] < 40
+                            
+                            # Dot & Label Logic
+                            if is_early_bird:
+                                dot_color = "#10b981" # Emerald
+                                s_label = "EARLY ENTRY"
+                            else:
+                                dot_color = "#3b82f6" if "SWING" in row['Strategy'] else "#f59e0b"
+                                s_label = row['Strategy']
 
-                    # Signal Styling
-                    sig_val = row['Signal']
-                    sig_bg = "#f3f4f6"; sig_fg = "#4b5563"; sig_border = "none"
-                    if sig_val in ['BUY', 'GOLDEN BUY', 'PRE-FLY']: sig_bg = "#dcfce7"; sig_fg = "#166534"
-                    elif sig_val == 'REJECTION WICK': sig_bg = "#111827"; sig_fg = "#ffffff"
-                    elif sig_val == 'SILENT ACCUM': sig_bg = "#ecfdf5"; sig_fg = "#065f46"
-                    elif sig_val == 'CONFLICT (HIGH RISK)': sig_bg = "#fee2e2"; sig_fg = "#991b1b"
-                    elif sig_val == 'PIN BAR (SUPPORT)': sig_bg = "#dcfce7"; sig_fg = "#166534"; sig_border = "1px solid #166534"
-                    
-                    # Card Content
-                    intraday_html = ""
-                    if 'Intraday_History' in row and row['Intraday_History']:
-                        past_sigs = ", ".join(row['Intraday_History'])
-                        intraday_html = f'<div class="intraday-alert" style="font-size: 0.65rem; color: #f59e0b; margin-bottom: 4px;">⚡ <b>Intraday:</b> {past_sigs}</div>'
+                            # Signal Styling
+                            sig_val = row['Signal']
+                            sig_bg = "#f3f4f6"; sig_fg = "#4b5563"; sig_border = "none"
+                            if sig_val in ['BUY', 'GOLDEN BUY', 'PRE-FLY']: sig_bg = "#dcfce7"; sig_fg = "#166534"
+                            elif sig_val == 'REJECTION WICK': sig_bg = "#111827"; sig_fg = "#ffffff"
+                            elif sig_val == 'SILENT ACCUM': sig_bg = "#ecfdf5"; sig_fg = "#065f46"
+                            elif sig_val == 'CONFLICT (HIGH RISK)': sig_bg = "#fee2e2"; sig_fg = "#991b1b"
+                            elif sig_val == 'PIN BAR (SUPPORT)': sig_bg = "#dcfce7"; sig_fg = "#166534"; sig_border = "1px solid #166534"
+                            
+                            # Card Content
+                            intraday_html = ""
+                            if 'Intraday_History' in row and row['Intraday_History']:
+                                past_sigs = ", ".join(row['Intraday_History'])
+                                intraday_html = f'<div class="intraday-alert" style="font-size: 0.65rem; color: #f59e0b; margin-bottom: 4px;">⚡ <b>Intraday:</b> {past_sigs}</div>'
 
-                    # Build card HTML
-                    srs_val = row.get('Sector_RS', 0)
-                    srs_color = "#166534" if srs_val > 0 else ("#991b1b" if srs_val < 0 else "#4b5563")
-                    stop_loss = row.get('Stop_Loss', 0)
-                    pat_consensus = row.get('Pattern Consensus (%)', 0)
+                            # Build card HTML
+                            srs_val = row.get('Sector_RS', 0)
+                            srs_color = "#166534" if srs_val > 0 else ("#991b1b" if srs_val < 0 else "#4b5563")
+                            stop_loss = row.get('Stop_Loss', 0)
+                            pat_consensus = row.get('Pattern Consensus (%)', 0)
+                            
+                            card_html = f'<div class="compact-card"><div class="card-header"><div class="header-left"><div class="dot-indicator" style="background-color: {dot_color};"></div><div class="ticker-name">{row["Ticker"]}</div></div><div class="status-pill">{s_label}</div></div>{intraday_html}<div class="score-container"><div class="score-label">Score</div><div class="score-big">{row["Conviction_Score"]}</div></div><div class="signal-badge" style="background-color: {sig_bg}; color: {sig_fg}; border: {sig_border};">{sig_val}</div><div class="stats-grid"><div class="stat-item"><div class="stat-lbl">SECTOR RS</div><div class="stat-val" style="color: {srs_color}; font-weight: 700;">{srs_val:+.1f}%</div></div><div class="stat-item"><div class="stat-lbl">STOP LOSS</div><div class="stat-val" style="color: #991b1b;">{stop_loss:.2f}</div></div><div class="stat-item"><div class="stat-lbl">PATTERN</div><div class="stat-val">{pat_consensus:.1f}%</div></div></div></div>'
+                            # Clean HTML indentation and render
+                            clean_card_html = textwrap.dedent(card_html).strip()
+                            st.markdown(clean_card_html, unsafe_allow_html=True)
+                            
+                            with st.expander(f"Details: {row['Ticker']}", expanded=False):
+                                st.write(f"✅ {row['Why']}")
+                                if row['Warnings']: st.warning(row['Warnings'])
+                                if user_api_key:
+                                    if st.button(f"AI Plan: {row['Ticker']}", key=f"tab_unified_btn_{row['Ticker']}"):
+                                        st.markdown(generate_ai_trading_plan(row['Ticker'], batch_df[batch_df['Ticker']==row['Ticker']].iloc[0], user_api_key))
+                        
+                        st.divider()
+                        st.subheader("📋 ตารางสรุปรวม (Summary Table)")
+                        # Safe Column Selection
+                        u_cols = {
+                            'Ticker': 'Ticker', 
+                            'Conviction_Score': 'Score', 
+                            'Signal': 'Signal', 
+                            'Strategy': 'Strategy', 
+                            'Sector_RS': 'Sector RS', 
+                            'Stop_Loss': 'Stop Loss', 
+                            'Similarity': 'Pattern'
+                        }
+                        unified_summary = top_conviction[[c for c in u_cols.keys() if c in top_conviction.columns]].copy()
+                        unified_summary.rename(columns=u_cols, inplace=True)
+                        st.dataframe(unified_summary, use_container_width=True)
                     
-                    card_html = f'<div class="compact-card"><div class="card-header"><div class="header-left"><div class="dot-indicator" style="background-color: {dot_color};"></div><div class="ticker-name">{row["Ticker"]}</div></div><div class="status-pill">{s_label}</div></div>{intraday_html}<div class="score-container"><div class="score-label">Score</div><div class="score-big">{row["Conviction_Score"]}</div></div><div class="signal-badge" style="background-color: {sig_bg}; color: {sig_fg}; border: {sig_border};">{sig_val}</div><div class="stats-grid"><div class="stat-item"><div class="stat-lbl">SECTOR RS</div><div class="stat-val" style="color: {srs_color}; font-weight: 700;">{srs_val:+.1f}%</div></div><div class="stat-item"><div class="stat-lbl">STOP LOSS</div><div class="stat-val" style="color: #991b1b;">{stop_loss:.2f}</div></div><div class="stat-item"><div class="stat-lbl">PATTERN</div><div class="stat-val">{pat_consensus:.1f}%</div></div></div></div>'
-                    # Clean HTML indentation and render
-                    clean_card_html = textwrap.dedent(card_html).strip()
-                    st.markdown(clean_card_html, unsafe_allow_html=True)
-                    
-                    with st.expander(f"Details: {row['Ticker']}", expanded=False):
-                        st.write(f"✅ {row['Why']}")
-                        if row['Warnings']: st.warning(row['Warnings'])
-                        if user_api_key:
-                            if st.button(f"AI Plan: {row['Ticker']}", key=f"tab_unified_btn_{row['Ticker']}"):
-                                st.markdown(generate_ai_trading_plan(row['Ticker'], batch_df[batch_df['Ticker']==row['Ticker']].iloc[0], user_api_key))
-                
-                st.divider()
-                st.subheader("📋 ตารางสรุปรวม (Summary Table)")
-                # Safe Column Selection
-                u_cols = {
-                    'Ticker': 'Ticker', 
-                    'Conviction_Score': 'Score', 
-                    'Signal': 'Signal', 
-                    'Strategy': 'Strategy', 
-                    'Sector_RS': 'Sector RS', 
-                    'Stop_Loss': 'Stop Loss', 
-                    'Similarity': 'Pattern'
-                }
-                unified_summary = top_conviction[[c for c in u_cols.keys() if c in top_conviction.columns]].copy()
-                unified_summary.rename(columns=u_cols, inplace=True)
-                st.dataframe(unified_summary, use_container_width=True)
-            
-            with st.expander("🔍 View All Unified Candidates", expanded=False):
-                st.dataframe(unified_df, use_container_width=True)
+                    with st.expander("🔍 View All Unified Candidates", expanded=False):
+                        st.dataframe(unified_df, use_container_width=True)
+                else:
+                    st.info("ℹ️ ไม่พบหุ้นที่เข้าเกณฑ์ Unified")
+            else:
+                st.warning("กรุณาทำการสแกนหุ้นก่อนเพื่อดูรายงาน Unified Report")
         else:
-            st.info("ℹ️ ไม่พบหุ้นที่เข้าเกณฑ์ Unified")
+            st.info("📊 Mode: Historical Scan - รายงาน Unified Report จะแสดงเฉพาะการสแกนแบบ Real-time เท่านั้น")
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาดในหน้า Unified Report: {str(e)}")
 
 with main_tabs[2]: # Bottom Fishing
     st.info("💎 หุ้นที่ Oversold และเริ่มมีสัญญาณกลับตัว (Bottom Fishing)")
