@@ -1,0 +1,1 @@
+ALTER TABLE auto_scan_results ADD COLUMN IF NOT EXISTS scan_type TEXT DEFAULT 'AUTO_SCAN';

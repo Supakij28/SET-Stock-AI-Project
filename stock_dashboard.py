@@ -65,7 +65,11 @@ def get_supabase_client() -> Client:
 def check_password():
     """Returns True if the user has the correct password with Institutional Grade UI."""
     
-    # 1. Inject Custom CSS for Font and UI Styling
+    # 1. ถ้าผ่านการล็อกอินอยู่แล้วใน Session นี้ ให้ผ่านทันที (สำคัญมากสำหรับ Persistence)
+    if st.session_state.get("authenticated", False):
+        return True
+
+    # 2. Inject Custom CSS for Font and UI Styling
     st.markdown("""
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;600&family=Sarabun:wght@300;400;600&display=swap');
@@ -98,58 +102,58 @@ def check_password():
             margin-bottom: 2rem;
         }
         
-        /* Fix for Thai characters in Streamlit inputs */
         input {
             font-family: 'Prompt', sans-serif !important;
         }
         </style>
     """, unsafe_allow_html=True)
 
-    # 2. ถ้าผ่านการล็อกอินอยู่แล้วใน Session นี้ ให้ผ่านทันที
-    if st.session_state.get("authenticated", False):
-        return True
+    # 3. Fetch Secret Password (Safe & Cached)
+    def get_target_password():
+        # Try secrets first
+        try:
+            if "APP_PASSWORD" in st.secrets:
+                return st.secrets["APP_PASSWORD"]
+        except:
+            pass
+        # Try env as fallback
+        return os.getenv("APP_PASSWORD")
 
-    # 3. Check for Secrets Readiness
-    secrets_ready = False
-    target_password = None
-    
-    try:
-        if "APP_PASSWORD" in st.secrets:
-            target_password = st.secrets["APP_PASSWORD"]
-            secrets_ready = True
-    except Exception:
-        secrets_ready = False
+    target_password = get_target_password()
 
-    if not secrets_ready or not target_password:
-        target_password = os.getenv("APP_PASSWORD")
-        if target_password:
-            secrets_ready = True
-
-    # 4. Waking Up Friendly UI
-    if not secrets_ready:
+    # 4. Waking Up / Loading State
+    if not target_password:
         st.markdown("""
             <div class="login-card">
                 <div class="login-header">⏳ ระบบกำลังเริ่มต้น</div>
                 <div class="login-subtitle">กำลังเชื่อมต่อฐานข้อมูลความปลอดภัย กรุณารอสักครู่...</div>
             </div>
         """, unsafe_allow_html=True)
+        st.spinner("Connecting to security vault...")
         if st.button("🔄 โหลดหน้าใหม่อีกครั้ง (Refresh)", use_container_width=True):
             st.rerun()
         return False
 
     # 5. Auth Logic
     def password_entered():
+        # Prevent accidental triggers if already authenticated
+        if st.session_state.get("authenticated", False):
+            return
+            
         user_input = str(st.session_state.get("password_input", "")).strip()
         safe_target = str(target_password).strip()
-        if user_input == safe_target:
-            st.session_state["authenticated"] = True
-            st.session_state["password_error"] = False
-            del st.session_state["password_input"]
-        else:
-            st.session_state["authenticated"] = False
-            st.session_state["password_error"] = True
+        
+        if user_input: # Only check if not empty
+            if user_input == safe_target:
+                st.session_state["authenticated"] = True
+                st.session_state["password_error"] = False
+                if "password_input" in st.session_state:
+                    del st.session_state["password_input"]
+            else:
+                st.session_state["authenticated"] = False
+                st.session_state["password_error"] = True
 
-    # 6. Institutional Grade Login UI Card
+    # 6. Login UI Card
     with st.container():
         st.markdown("""
             <div class="login-card">
@@ -158,7 +162,6 @@ def check_password():
             </div>
         """, unsafe_allow_html=True)
         
-        # Center the input
         _, col, _ = st.columns([1, 2, 1])
         with col:
             st.text_input(
