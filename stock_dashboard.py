@@ -65,17 +65,23 @@ def get_supabase_client() -> Client:
 def check_password():
     """Returns True if the user has the correct password with Institutional Grade UI."""
     
-    # 1. ถ้าผ่านการล็อกอินอยู่แล้วใน Session นี้ ให้ผ่านทันที (สำคัญมากสำหรับ Persistence)
+    # 1. Persistent Authentication via Session State or Query Params (for Mobile Refresh)
     if st.session_state.get("authenticated", False):
         return True
+        
+    if st.query_params.get("auth") == "true":
+        st.session_state["authenticated"] = True
+        return True
 
-    # 2. Inject Custom CSS for Font and UI Styling
+    # 2. Inject Custom CSS for Font, UI Styling, and Mobile Pull-to-Refresh Disable
     st.markdown("""
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;600&family=Sarabun:wght@300;400;600&display=swap');
         
-        html, body, [class*="css"] {
+        html, body, [class*="css"], [data-testid="stAppViewContainer"] {
             font-family: 'Prompt', 'Sarabun', sans-serif !important;
+            overscroll-behavior-y: none !important;
+            touch-action: pan-x pan-y;
         }
         
         .login-card {
@@ -146,6 +152,7 @@ def check_password():
         if user_input: # Only check if not empty
             if user_input == safe_target:
                 st.session_state["authenticated"] = True
+                st.query_params["auth"] = "true" # Set flag for refresh persistence
                 st.session_state["password_error"] = False
                 if "password_input" in st.session_state:
                     del st.session_state["password_input"]
@@ -2263,7 +2270,11 @@ with main_tabs[0]: # Smart Pattern Radar
                                 yaxis=dict(range=[y_min, y_max], fixedrange=False),
                                 xaxis=dict(rangeslider=dict(visible=False))
                             )
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, use_container_width=True, config={
+                                'scrollZoom': False,
+                                'displayModeBar': True,
+                                'responsive': True
+                            })
                         else:
                             st.warning(f"⚠️ ไม่พบข้อมูลราคาย้อนหลังสำหรับ {selected_ticker} (โปรดตรวจสอบการเชื่อมต่อ Yahoo Finance)")
                     except Exception as e:
@@ -2761,7 +2772,11 @@ with main_tabs[5]: # SILENT ACCUM Insight
                                     x=1
                                 )
                             )
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, use_container_width=True, config={
+                                'scrollZoom': False,
+                                'displayModeBar': True,
+                                'responsive': True
+                            })
                         else:
                             st.warning(f"⚠️ ไม่สามารถดึงข้อมูลราคาของ {sel_sa_ticker} จาก Yahoo Finance ได้ในขณะนี้ กรุณาลองใหม่อีกครั้งหรือตรวจสอบ Ticker")
                 except Exception as chart_err:
@@ -3169,7 +3184,11 @@ with main_tabs[7]: # Advanced Tools / More Features
             fig.add_hline(y=rsi_s, line_dash="dash", line_color="red", row=2, col=1)
             fig.add_hline(y=rsi_b, line_dash="dash", line_color="green", row=2, col=1)
             fig.update_layout(height=600, template="plotly_white", xaxis_rangeslider_visible=False)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config={
+                'scrollZoom': False,
+                'displayModeBar': True,
+                'responsive': True
+            })
             
             # 3. DTW Projection Chart
             st.subheader("🔮 Pattern Matching Projection (Next 20 Days)")
