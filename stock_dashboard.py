@@ -2978,15 +2978,35 @@ with main_tabs[6]: # Market Scan Results (Hybrid)
                             (hist_signals['ticker_clean'] == base_sel_ticker)
                         ].copy()
                         
-                        # FINAL DEDUPLICATION: Ensure 1 marker per Category per Day
-                        filtered_signals = filtered_signals.sort_values('scanned_at', ascending=True)
-                        filtered_signals = filtered_signals.drop_duplicates(
-                            subset=['signal_date_str', 'display_signal'], 
-                            keep='first'
-                        )
+                        # FINAL DEBOUNCE LOGIC: Only show Initial Signal Trigger (Debounce consecutive signals)
+                        if not filtered_signals.empty:
+                            filtered_signals = filtered_signals.sort_values('scanned_at', ascending=True)
+                            debounced_rows = []
+                            last_signal_type = None
+                            last_signal_date = None
+                            gap_days = 5  # Allow repeating the same signal type after 5 days
+                            
+                            for _, sig_row in filtered_signals.iterrows():
+                                curr_type = sig_row['display_signal']
+                                curr_date = pd.to_datetime(sig_row['signal_date_str'])
+                                
+                                is_trigger = False
+                                if curr_type != last_signal_type:
+                                    is_trigger = True
+                                elif last_signal_date is not None:
+                                    days_diff = (curr_date - last_signal_date).days
+                                    if days_diff >= gap_days:
+                                        is_trigger = True
+                                
+                                if is_trigger:
+                                    debounced_rows.append(sig_row)
+                                    last_signal_type = curr_type
+                                    last_signal_date = curr_date
+                            
+                            filtered_signals = pd.DataFrame(debounced_rows)
                         
                         # Print Debug Summary to Streamlit (Temporary Check)
-                        st.caption(f"🔍 DEBUG: Found {len(filtered_signals)} technical signals for {sel_hist_ticker} (Last 90 days)")
+                        st.caption(f"🔍 DEBUG: Found {len(filtered_signals)} debounced technical signals for {sel_hist_ticker} (Last 90 days)")
                     else:
                         filtered_signals = pd.DataFrame()
                         selected_display_signals = []
@@ -3089,6 +3109,27 @@ with main_tabs[6]: # Market Scan Results (Hybrid)
                     )
                     
                     st.plotly_chart(fig_hist, use_container_width=True)
+                    
+                    # 4. Signal Summary Table & KPIs (Consistent with First Trigger Logic)
+                    if not filtered_signals.empty:
+                        st.write("### 📜 Signal History Summary (First Trigger)")
+                        
+                        # KPIs for Signal Counts
+                        kpi_buy = len(filtered_signals[filtered_signals['display_signal'] == 'BUY / BREAKOUT'])
+                        kpi_sell = len(filtered_signals[filtered_signals['display_signal'] == 'SELL / WARNING'])
+                        kpi_pb = len(filtered_signals[filtered_signals['display_signal'] == 'PULLBACK / PIN BAR'])
+                        kpi_mom = len(filtered_signals[filtered_signals['display_signal'] == 'MOMENTUM / VOL'])
+                        
+                        mk1, mk2, mk3, mk4 = st.columns(4)
+                        mk1.metric("Buy Triggers", kpi_buy)
+                        mk2.metric("Sell Triggers", kpi_sell)
+                        mk3.metric("Pullback Triggers", kpi_pb)
+                        mk4.metric("Momentum Triggers", kpi_mom)
+                        
+                        # Summary Table
+                        display_history = filtered_signals[['signal_date_str', 'display_signal', 'signal', 'score', 'close_price', 'rsi', 'source']].copy()
+                        display_history.columns = ['Date', 'Category', 'Raw Signal', 'Score', 'Price', 'RSI', 'Source']
+                        st.dataframe(display_history.sort_values('Date', ascending=False), use_container_width=True)
                 else:
                     st.error(f"ไม่สามารถดึงข้อมูลราคาของ {sel_hist_ticker} ได้")
     else:
