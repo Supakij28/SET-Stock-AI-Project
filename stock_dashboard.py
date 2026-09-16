@@ -36,6 +36,16 @@ load_dotenv()
 SET_TZ = pytz.timezone('Asia/Bangkok')
 st.set_page_config(page_title="Quant Strategy Station", layout="wide")
 
+# --- Utility Functions ---
+def safe_float(val, default=0.0):
+    """Safely convert value to float, handling None, NaN, and non-numeric strings."""
+    try:
+        if val is None or pd.isna(val):
+            return default
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
 # --- Database Integration (Supabase) ---
 def get_supabase_client() -> Client:
     """Initialize Supabase client from Streamlit secrets or environment variables."""
@@ -1467,13 +1477,13 @@ def generate_unified_report(batch_df, regime):
     # Filter out neutral/bearish signals from the main analysis to focus on quality
     ignored_signals = ['WAIT', 'WAIT (DOWNTREND)', 'WAIT (BEARISH TRAP)', 'FADING MOMENTUM', 'CONFLICT (HIGH RISK)']
     candidates = batch_df[
-        (batch_df['Score Diff'] > 5) & 
+        (batch_df['Score Diff'].apply(lambda x: safe_float(x) > 5)) & 
         (~batch_df['Signal'].isin(ignored_signals))
     ].copy()
     
     if candidates.empty:
         # Fallback to show something if no perfect matches, but with lower score diff
-        candidates = batch_df[batch_df['Score Diff'] > 0].copy()
+        candidates = batch_df[batch_df['Score Diff'].apply(lambda x: safe_float(x) > 0)].copy()
         
     # Get signal performance stats
     perf_stats = get_signal_performance_stats()
@@ -1504,26 +1514,29 @@ def generate_unified_report(batch_df, regime):
     # Analyze Top 20 by Score Diff
     for _, row in candidates.head(20).iterrows():
         ticker = row['Ticker']
-        similarity = row.get('Pattern Consensus (%)', 0)
-        mtf_score = row.get('MTF Score', 0)
-        rsi = row.get('RSI', 50)
-        rel_vol = row.get('Relative Vol', 1.0)
-        score_velocity = row.get('Score Velocity', 0)
-        sector_rs = row.get('Sector_RS', 0)
-        price_change = row.get('% Change', 0)
-        atr = row.get('ATR', 0)
-        last_price = row.get('Last Price', 0)
+        similarity = safe_float(row.get('Pattern Consensus (%)', 0))
+        mtf_score = safe_float(row.get('MTF Score', 0))
+        rsi = safe_float(row.get('RSI', 50))
+        rel_vol = safe_float(row.get('Relative Vol', 1.0))
+        score_velocity = safe_float(row.get('Score Velocity', 0))
+        sector_rs = safe_float(row.get('Sector_RS', 0))
+        price_change = safe_float(row.get('% Change', 0))
+        atr = safe_float(row.get('ATR', 0))
+        last_price = safe_float(row.get('Last Price', 0))
         
         # Dynamic Stop Loss: Last Price - (2 * ATR)
-        stop_loss = last_price - (2 * atr) if atr > 0 else last_price * 0.95
+        stop_loss = safe_float(last_price) - (2 * safe_float(atr)) if safe_float(atr) > 0 else safe_float(last_price) * 0.95
         
         formula_score, strategy, reasons, warnings = calculate_conviction_score(
             ticker, row['Signal'], similarity, mtf_score, regime, perf_stats, 
             rsi, rel_vol, score_velocity, sector_rs=sector_rs, price_change=price_change
         )
         
+        # Ensure formula_score is a valid number
+        formula_score = safe_float(formula_score)
+        
         # Strict SRS Filter: Skip if significantly underperforming
-        if sector_rs < -1.5:
+        if safe_float(sector_rs) < -1.5:
             continue
         
         # --- Intraday Memory Check (The HMPRO Fix) ---
@@ -1556,7 +1569,7 @@ def generate_unified_report(batch_df, regime):
         
         ticker_labeled = hist_scores[hist_scores['outcome_label'].notnull()] if not hist_scores.empty else pd.DataFrame()
         ticker_win_rate = 0
-        if not ticker_labeled.empty:
+        if not ticker_labeled.empty and len(ticker_labeled) > 0:
             ticker_win_rate = (len(ticker_labeled[ticker_labeled['outcome_label'] == 'Win']) / len(ticker_labeled)) * 100
             
         sig_stats = perf_stats.get(row['Signal'], {})
@@ -2298,28 +2311,43 @@ with main_tabs[1]: # Unified Report
                 unified_df = generate_unified_report(batch_df, regime)
                 
                 if not unified_df.empty:
+                    # Safe Data Clean-up before Rendering
+                    unified_df = unified_df.fillna({
+                        'Conviction_Score': 0, 
+                        'Sector_RS': 0, 
+                        'Stop_Loss': 0, 
+                        'Similarity': 0,
+                        'Pattern Consensus (%)': 0,
+                        'Ticker_Win_Rate': 0,
+                        'Signal_Win_Rate': 0,
+                        'MTF_Score': 0
+                    })
+                    
                     # Sorting: High Conviction first, then positive signals
-                    high_strength = unified_df[unified_df['Conviction_Score'] >= 40].copy()
+                    # Use safe_float for robust numerical comparison
+                    high_strength = unified_df[unified_df['Conviction_Score'].apply(lambda x: safe_float(x) >= 40)].copy()
                     pos_signals = ['BUY', 'GOLDEN BUY', 'PRE-FLY', 'PIN BAR (SUPPORT)', 'SILENT ACCUM']
-                    early_birds = unified_df[(unified_df['Conviction_Score'] < 40) & (unified_df['Signal'].isin(pos_signals))].copy()
+                    early_birds = unified_df[(unified_df['Conviction_Score'].apply(lambda x: safe_float(x) < 40)) & (unified_df['Signal'].isin(pos_signals))].copy()
                     top_conviction = pd.concat([high_strength, early_birds]).head(20)
                     
                     if not top_conviction.empty:
                         st.success(f"🔥 พบหุ้นน่าสนใจ {len(top_conviction)} ตัว (จัดลำดับตามคะแนนและความมั่นใจ)")
                         
                         for idx, (i, row) in enumerate(top_conviction.iterrows()):
-                            is_early_bird = row['Conviction_Score'] < 40
+                            # Safe Numerical Handling for Card Logic
+                            conv_score = safe_float(row.get('Conviction_Score', 0))
+                            is_early_bird = conv_score < 40
                             
                             # Dot & Label Logic
                             if is_early_bird:
                                 dot_color = "#10b981" # Emerald
                                 s_label = "EARLY ENTRY"
                             else:
-                                dot_color = "#3b82f6" if "SWING" in row['Strategy'] else "#f59e0b"
-                                s_label = row['Strategy']
+                                dot_color = "#3b82f6" if "SWING" in str(row.get('Strategy', '')) else "#f59e0b"
+                                s_label = row.get('Strategy', 'Unknown')
 
                             # Signal Styling
-                            sig_val = row['Signal']
+                            sig_val = row.get('Signal', 'WAIT')
                             sig_bg = "#f3f4f6"; sig_fg = "#4b5563"; sig_border = "none"
                             if sig_val in ['BUY', 'GOLDEN BUY', 'PRE-FLY']: sig_bg = "#dcfce7"; sig_fg = "#166534"
                             elif sig_val == 'REJECTION WICK': sig_bg = "#111827"; sig_fg = "#ffffff"
@@ -2333,13 +2361,14 @@ with main_tabs[1]: # Unified Report
                                 past_sigs = ", ".join(row['Intraday_History'])
                                 intraday_html = f'<div class="intraday-alert" style="font-size: 0.65rem; color: #f59e0b; margin-bottom: 4px;">⚡ <b>Intraday:</b> {past_sigs}</div>'
 
-                            # Build card HTML
-                            srs_val = row.get('Sector_RS', 0)
+                            # Build card HTML with Safe Numerical Formatting
+                            srs_val = safe_float(row.get('Sector_RS', 0))
                             srs_color = "#166534" if srs_val > 0 else ("#991b1b" if srs_val < 0 else "#4b5563")
-                            stop_loss = row.get('Stop_Loss', 0)
-                            pat_consensus = row.get('Pattern Consensus (%)', 0)
+                            stop_loss = safe_float(row.get('Stop_Loss', 0))
+                            # Try to get Similarity first, then Pattern Consensus (%)
+                            pat_consensus = safe_float(row.get('Similarity', row.get('Pattern Consensus (%)', 0)))
                             
-                            card_html = f'<div class="compact-card"><div class="card-header"><div class="header-left"><div class="dot-indicator" style="background-color: {dot_color};"></div><div class="ticker-name">{row["Ticker"]}</div></div><div class="status-pill">{s_label}</div></div>{intraday_html}<div class="score-container"><div class="score-label">Score</div><div class="score-big">{row["Conviction_Score"]}</div></div><div class="signal-badge" style="background-color: {sig_bg}; color: {sig_fg}; border: {sig_border};">{sig_val}</div><div class="stats-grid"><div class="stat-item"><div class="stat-lbl">SECTOR RS</div><div class="stat-val" style="color: {srs_color}; font-weight: 700;">{srs_val:+.1f}%</div></div><div class="stat-item"><div class="stat-lbl">STOP LOSS</div><div class="stat-val" style="color: #991b1b;">{stop_loss:.2f}</div></div><div class="stat-item"><div class="stat-lbl">PATTERN</div><div class="stat-val">{pat_consensus:.1f}%</div></div></div></div>'
+                            card_html = f'<div class="compact-card"><div class="card-header"><div class="header-left"><div class="dot-indicator" style="background-color: {dot_color};"></div><div class="ticker-name">{row["Ticker"]}</div></div><div class="status-pill">{s_label}</div></div>{intraday_html}<div class="score-container"><div class="score-label">Score</div><div class="score-big">{conv_score:.0f}</div></div><div class="signal-badge" style="background-color: {sig_bg}; color: {sig_fg}; border: {sig_border};">{sig_val}</div><div class="stats-grid"><div class="stat-item"><div class="stat-lbl">SECTOR RS</div><div class="stat-val" style="color: {srs_color}; font-weight: 700;">{srs_val:+.1f}%</div></div><div class="stat-item"><div class="stat-lbl">STOP LOSS</div><div class="stat-val" style="color: #991b1b;">{stop_loss:.2f}</div></div><div class="stat-item"><div class="stat-lbl">PATTERN</div><div class="stat-val">{pat_consensus:.1f}%</div></div></div></div>'
                             # Clean HTML indentation and render
                             clean_card_html = textwrap.dedent(card_html).strip()
                             st.markdown(clean_card_html, unsafe_allow_html=True)
@@ -2401,8 +2430,9 @@ with main_tabs[2]: # Bottom Fishing
                 
                 # Build dynamic reasons based on available data
                 reasons = []
-                if row['rsi'] < 30: reasons.append("Extreme Oversold (RSI < 30)")
-                elif row['rsi'] <= 35: reasons.append("Oversold Zone (RSI <= 35)")
+                rsi_val = safe_float(row.get('rsi', 50))
+                if rsi_val < 30: reasons.append("Extreme Oversold (RSI < 30)")
+                elif rsi_val <= 35: reasons.append("Oversold Zone (RSI <= 35)")
                 if row.get('is_pinbar'): reasons.append("Bullish Pin Bar Detected")
                 if row.get('signal') == 'BUY': reasons.append("Positive Buy Signal")
                 
@@ -2562,7 +2592,7 @@ with main_tabs[4]: # Admin & History
             try:
                 if 'Signal' in row.index and 'BUY' in str(row['Signal']): 
                     styles = ['background-color: rgba(34, 197, 94, 0.2)'] * len(row)
-                elif 'Bearish Score (%)' in row.index and row['Bearish Score (%)'] > 85: 
+                elif 'Bearish Score (%)' in row.index and safe_float(row['Bearish Score (%)']) > 85: 
                     styles = ['background-color: rgba(239, 68, 68, 0.2)'] * len(row)
             except:
                 pass
