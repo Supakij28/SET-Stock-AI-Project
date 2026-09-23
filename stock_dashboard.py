@@ -1596,7 +1596,25 @@ def generate_unified_report(batch_df, regime):
         })
     
     # Sort by: 1. Signal Tier (1 is highest), 2. Conviction Score
-    return pd.DataFrame(report_data).sort_values(['Signal_Tier', 'Conviction_Score'], ascending=[True, False])
+    df_report = pd.DataFrame(report_data)
+    
+    if df_report.empty:
+        # Return empty DataFrame with expected columns to avoid downstream KeyErrors
+        return pd.DataFrame(columns=[
+            'Ticker', 'Signal', 'Strategy', 'Stop_Loss', 'Persistence', 
+            'Score_Trend', 'Similarity', 'Ticker_Win_Rate', 'Signal_Win_Rate', 
+            'MTF_Score', 'Conviction_Score', 'Signal_Tier', 'Why', 'Warnings', 
+            'Price', 'Intraday_History', 'Sector_RS'
+        ])
+        
+    # Standardize column name just in case
+    if 'signal_tier' in df_report.columns and 'Signal_Tier' not in df_report.columns:
+        df_report = df_report.rename(columns={'signal_tier': 'Signal_Tier'})
+    
+    if 'Signal_Tier' not in df_report.columns:
+        df_report['Signal_Tier'] = 3 # Default to Tier 3
+        
+    return df_report.sort_values(['Signal_Tier', 'Conviction_Score'], ascending=[True, False])
 
 
 # --- 7. SET100 Batch Scanner ---
@@ -2320,9 +2338,14 @@ with main_tabs[1]: # Unified Report
                         'Pattern Consensus (%)': 0,
                         'Ticker_Win_Rate': 0,
                         'Signal_Win_Rate': 0,
-                        'MTF_Score': 0
+                        'MTF_Score': 0,
+                        'Signal_Tier': 3
                     })
                     
+                    # Ensure Signal_Tier exists for filtering
+                    if 'Signal_Tier' not in unified_df.columns:
+                        unified_df['Signal_Tier'] = 3
+                        
                     # Sorting: High Conviction first, then positive signals
                     # Use safe_float for robust numerical comparison
                     high_strength = unified_df[unified_df['Conviction_Score'].apply(lambda x: safe_float(x) >= 40)].copy()
