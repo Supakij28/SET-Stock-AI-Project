@@ -124,53 +124,7 @@ def check_password():
         </style>
     """, unsafe_allow_html=True)
 
-    # 3. Fetch Secret Password (Safe & Cached)
-    def get_target_password():
-        # Try secrets first
-        try:
-            if "APP_PASSWORD" in st.secrets:
-                return st.secrets["APP_PASSWORD"]
-        except:
-            pass
-        # Try env as fallback
-        return os.getenv("APP_PASSWORD")
-
-    target_password = get_target_password()
-
-    # 4. Waking Up / Loading State
-    if not target_password:
-        st.markdown("""
-            <div class="login-card">
-                <div class="login-header">⏳ ระบบกำลังเริ่มต้น</div>
-                <div class="login-subtitle">กำลังเชื่อมต่อฐานข้อมูลความปลอดภัย กรุณารอสักครู่...</div>
-            </div>
-        """, unsafe_allow_html=True)
-        st.spinner("Connecting to security vault...")
-        if st.button("🔄 โหลดหน้าใหม่อีกครั้ง (Refresh)", use_container_width=True):
-            st.rerun()
-        return False
-
-    # 5. Auth Logic
-    def password_entered():
-        # Prevent accidental triggers if already authenticated
-        if st.session_state.get("authenticated", False):
-            return
-            
-        user_input = str(st.session_state.get("password_input", "")).strip()
-        safe_target = str(target_password).strip()
-        
-        if user_input: # Only check if not empty
-            if user_input == safe_target:
-                st.session_state["authenticated"] = True
-                st.query_params["auth"] = "true" # Set flag for refresh persistence
-                st.session_state["password_error"] = False
-                if "password_input" in st.session_state:
-                    del st.session_state["password_input"]
-            else:
-                st.session_state["authenticated"] = False
-                st.session_state["password_error"] = True
-
-    # 6. Login UI Card
+    # 3. Login UI with st.form for Mobile UX Stability
     with st.container():
         st.markdown("""
             <div class="login-card">
@@ -181,22 +135,23 @@ def check_password():
         
         _, col, _ = st.columns([1, 2, 1])
         with col:
-            st.text_input(
-                "Access Password",
-                type="password",
-                on_change=password_entered,
-                key="password_input",
-                placeholder="Enter password to unlock..."
-            )
-            
-            if st.session_state.get("password_error", False):
-                st.error("😕 รหัสผ่านไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง")
-            
-            st.button("เข้าสู่ระบบ (Unlock Terminal)", on_click=password_entered, use_container_width=True, type="primary")
+            with st.form("login_form", clear_on_submit=False):
+                st.subheader("🔒 Authentication Required")
+                user_password = st.text_input("Please enter the access password", type="password", placeholder="Enter password to unlock...")
+                submit_button = st.form_submit_button("เข้าสู่ระบบ (Unlock Terminal)", use_container_width=True, type="primary")
 
-    if st.session_state.get("authenticated", False):
-        st.rerun()
-        
+                if submit_button:
+                    # Fetch and Clean Secret Password
+                    target_pass = str(st.secrets.get("APP_PASSWORD", os.getenv("APP_PASSWORD", "admin1234"))).strip()
+                    entered_pass = str(user_password).strip()
+
+                    if entered_pass == target_pass:
+                        st.session_state["authenticated"] = True
+                        st.query_params["auth"] = "true" # Set flag for refresh persistence
+                        st.rerun()
+                    else:
+                        st.error("😞 Password incorrect / รหัสผ่านไม่ถูกต้อง")
+
     return False
 
 # 1. Block main app rendering until authenticated
