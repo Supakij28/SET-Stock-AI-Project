@@ -3151,7 +3151,7 @@ with main_tabs[7]: # Market Bottom (WVF)
             st.divider()
             col_v1, col_v2 = st.columns(2)
             show_silent_accum = col_v1.checkbox("แสดงสัญญาณ Silent Accumulation บนกราฟ", value=True)
-            wvf_panel_ratio = col_v2.slider("ปรับความสูงพาเนล WVF", 0.2, 0.5, 0.32, 0.05)
+            wvf_panel_ratio = col_v2.slider("ปรับความสูงพาเนล WVF", 0.15, 0.6, 0.35, 0.05)
 
         # 2. WVF Scanner Table
         st.write(f"### 🔍 WVF Bottom Climax Scanner ({wvf_scan_mode})")
@@ -3366,7 +3366,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                     
                     # Formatting & Range Selector
                     fig.update_layout(
-                        height=700,
+                        height=800,
                         template='plotly_dark',
                         paper_bgcolor='rgba(0,0,0,0)',
                         plot_bgcolor='rgba(0,0,0,0)',
@@ -3424,7 +3424,12 @@ with main_tabs[7]: # Market Bottom (WVF)
                         zeroline=True,
                         row=2, col=1
                     )
-                    fig.update_yaxes(showgrid=True, gridcolor='rgba(128, 128, 128, 0.15)', row=1, col=1)
+                    fig.update_yaxes(
+                        fixedrange=False, 
+                        showgrid=True, 
+                        gridcolor='rgba(128, 128, 128, 0.15)', 
+                        row=1, col=1
+                    )
                     
                     st.plotly_chart(fig, use_container_width=True, config={
                         'scrollZoom': True, 
