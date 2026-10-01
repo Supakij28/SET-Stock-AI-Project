@@ -3150,14 +3150,26 @@ with main_tabs[7]: # Market Bottom (WVF)
         # 2. WVF Scanner Table
         st.write(f"### 🔍 WVF Bottom Climax Scanner ({wvf_scan_mode})")
         
-        # We need a list of tickers to scan. SET100 is standard in this app.
-        if 'set100_tickers' not in st.session_state:
+        # Robust Ticker Loading
+        if 'set100_tickers' not in st.session_state or not st.session_state['set100_tickers']:
             try:
                 with open('tickers_config.json', 'r') as f:
                     config = json.load(f)
                     st.session_state['set100_tickers'] = config.get('set100', [])
-            except:
-                st.session_state['set100_tickers'] = ["AOT.BK", "CPALL.BK", "PTT.BK", "ADVANC.BK"] # Fallback
+                if not st.session_state['set100_tickers']:
+                    raise ValueError("Empty ticker list")
+            except Exception:
+                # Fallback to a solid list of SET100/Blue-chip stocks
+                st.session_state['set100_tickers'] = [
+                    "ADVANC.BK", "AOT.BK", "AWC.BK", "BANPU.BK", "BBL.BK", "BCH.BK", "BCP.BK", "BCPG.BK", "BDMS.BK", "BEM.BK",
+                    "BGRIM.BK", "BH.BK", "BJC.BK", "BTS.BK", "CBG.BK", "CENTEL.BK", "CHG.BK", "CK.BK", "CKP.BK", "COM7.BK",
+                    "CPALL.BK", "CPF.BK", "CPN.BK", "CRC.BK", "DELTA.BK", "DOHOME.BK", "EA.BK", "EGCO.BK", "GLOBAL.BK", "GPSC.BK",
+                    "GULF.BK", "GUNKUL.BK", "HANA.BK", "HMPRO.BK", "INTUCH.BK", "IRPC.BK", "IVL.BK", "JMART.BK", "JMT.BK", "KBANK.BK",
+                    "KCE.BK", "KEX.BK", "KKP.BK", "KTB.BK", "KTC.BK", "LH.BK", "MINT.BK", "MTC.BK", "OR.BK", "OSP.BK",
+                    "PLANB.BK", "PRM.BK", "PTG.BK", "PTT.BK", "PTTEP.BK", "PTTGC.BK", "RATCH.BK", "RCL.BK", "SAWAD.BK", "SCB.BK",
+                    "SCC.BK", "SCGP.BK", "STA.BK", "STARK.BK", "STEC.BK", "STGT.BK", "TCAP.BK", "THANI.BK", "TIDLOR.BK", "TIPH.BK",
+                    "TISCO.BK", "TOP.BK", "TRUE.BK", "TTB.BK", "TU.BK", "VGI.BK", "WHA.BK"
+                ]
 
         tickers = st.session_state['set100_tickers']
         
@@ -3230,7 +3242,13 @@ with main_tabs[7]: # Market Bottom (WVF)
             signaled_tickers = st.session_state['wvf_scan_results']['Ticker'].unique().tolist()
         
         # Build the full list: Signaled first, then the rest of SET100
-        sorted_tickers = signaled_tickers + [t for t in tickers if t not in signaled_tickers]
+        # Ensure we don't have duplicates and preserve order
+        other_tickers = [t for t in tickers if t not in signaled_tickers]
+        sorted_tickers = signaled_tickers + other_tickers
+        
+        # Safety check: if sorted_tickers is still empty (should not happen with fallback)
+        if not sorted_tickers:
+            sorted_tickers = ["SCGP.BK", "PTT.BK", "AOT.BK", "CPALL.BK"]
         
         # Display name mapping
         ticker_display_map = {t: (f"🔥 {t} (Climax Signal)" if t in signaled_tickers else t) for t in sorted_tickers}
@@ -3238,7 +3256,8 @@ with main_tabs[7]: # Market Bottom (WVF)
         selected_wvf_ticker = st.selectbox(
             "เลือกหุ้นเพื่อวิเคราะห์ (Select Ticker to Analyze):",
             options=sorted_tickers,
-            format_func=lambda x: ticker_display_map.get(x, x)
+            format_func=lambda x: ticker_display_map.get(x, x),
+            key="wvf_ticker_selector"
         )
 
         # 3. Interactive WVF Chart
