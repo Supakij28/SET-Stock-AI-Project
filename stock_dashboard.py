@@ -3351,8 +3351,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                             ]),
                             bgcolor="rgba(54, 58, 69, 0.8)",
                             activecolor="#089981",
-                            font=dict(size=11),
-                            active=2 # Set 6M as default active button
+                            font=dict(size=11)
                         ),
                         range=[start_date_6m, last_date], # Default to 6M
                         row=1, col=1
