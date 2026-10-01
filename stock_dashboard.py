@@ -3372,13 +3372,14 @@ with main_tabs[7]: # Market Bottom (WVF)
                         margin=dict(l=10, r=10, t=50, b=10),
                         showlegend=True,
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                        hovermode='x unified',
+                        hovermode='x',
                         hoverlabel=dict(
-                            bgcolor="rgba(30, 34, 45, 0.9)", # Darker theme compatible background
+                            bgcolor="rgba(30, 30, 30, 0.6)", # High transparency to see through to candles
                             font_size=12,
                             font_family="sans-serif",
                             font_color="white",
-                            align="left"
+                            align="left",
+                            namelength=-1 # Show full trace names
                         ),
                         dragmode='pan' # Better for mobile touch
                     )
@@ -3390,9 +3391,10 @@ with main_tabs[7]: # Market Bottom (WVF)
                         gridcolor='rgba(128, 128, 128, 0.15)',
                         showspikes=True,
                         spikemode='across',
-                        spikedash='dash',
+                        spikesnap='cursor',
                         spikethickness=1,
-                        spikecolor='rgba(255, 255, 255, 0.5)',
+                        spikecolor='gray',
+                        spikedash='dash',
                         rangeselector=dict(
                             buttons=list([
                                 dict(count=1, label="1M", step="month", stepmode="backward"),
