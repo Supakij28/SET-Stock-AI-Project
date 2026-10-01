@@ -3149,7 +3149,9 @@ with main_tabs[7]: # Market Bottom (WVF)
             
             # Additional Visualization Toggles
             st.divider()
-            show_silent_accum = st.checkbox("แสดงสัญญาณ Silent Accumulation บนกราฟ", value=True)
+            col_v1, col_v2 = st.columns(2)
+            show_silent_accum = col_v1.checkbox("แสดงสัญญาณ Silent Accumulation บนกราฟ", value=True)
+            wvf_panel_ratio = col_v2.slider("ปรับความสูงพาเนล WVF", 0.2, 0.5, 0.32, 0.05)
 
         # 2. WVF Scanner Table
         st.write(f"### 🔍 WVF Bottom Climax Scanner ({wvf_scan_mode})")
@@ -3299,8 +3301,8 @@ with main_tabs[7]: # Market Bottom (WVF)
                     
                     # Create Subplots
                     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                                       vertical_spacing=0.06, 
-                                       row_heights=[0.7, 0.3])
+                                       vertical_spacing=0.03, 
+                                       row_heights=[1 - wvf_panel_ratio, wvf_panel_ratio])
                     
                     # Panel 1: Candlestick (TradingView Style Colors)
                     fig.add_trace(go.Candlestick(
@@ -3413,14 +3415,23 @@ with main_tabs[7]: # Market Bottom (WVF)
                     
                     fig.update_xaxes(showgrid=True, gridcolor='rgba(128, 128, 128, 0.15)', row=2, col=1)
                     
-                    # Invert Y-axis for WVF Panel
-                    fig.update_yaxes(autorange="reversed", row=2, col=1, showgrid=True, gridcolor='rgba(128, 128, 128, 0.15)')
+                    # Invert Y-axis for WVF Panel & Enable Scaling
+                    fig.update_yaxes(
+                        autorange="reversed", 
+                        fixedrange=False, # Enable Y-axis scaling/dragging
+                        showgrid=True, 
+                        gridcolor='rgba(128, 128, 128, 0.15)',
+                        zeroline=True,
+                        row=2, col=1
+                    )
                     fig.update_yaxes(showgrid=True, gridcolor='rgba(128, 128, 128, 0.15)', row=1, col=1)
                     
                     st.plotly_chart(fig, use_container_width=True, config={
                         'scrollZoom': True, 
                         'responsive': True,
                         'displaylogo': False,
+                        'displayModeBar': True,
+                        'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'eraseshape'],
                         'modeBarButtonsToRemove': ['select2d', 'lasso2d']
                     })
                 else:
