@@ -18,16 +18,10 @@ import textwrap
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from scanner_engine import (
-    calculate_quant_indicators, 
-    calculate_wvf,
-    get_pre_breakout_scanner, 
-    get_recovery_signals, 
-    core_strategy_scanner,
-    calculate_conviction_score,
-    get_market_regime as get_engine_market_regime,
-    validate_scanner_accuracy,
-    get_mtf_confluence,
-    get_signal_performance_stats
+    calculate_quant_indicators, calculate_wvf, get_pre_breakout_scanner, 
+    get_recovery_signals, core_strategy_scanner, calculate_conviction_score, 
+    get_market_regime as get_engine_market_regime, validate_scanner_accuracy, 
+    get_mtf_confluence, get_signal_performance_stats
 )
 
 # Load .env for local development
