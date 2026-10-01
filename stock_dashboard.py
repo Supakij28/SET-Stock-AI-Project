@@ -19,6 +19,7 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 from scanner_engine import (
     calculate_quant_indicators, 
+    calculate_wvf,
     get_pre_breakout_scanner, 
     get_recovery_signals, 
     core_strategy_scanner,
@@ -2089,6 +2090,7 @@ main_tabs = st.tabs([
     "📜 Admin & History", 
     "💎 SILENT ACCUM Insight",
     "📊 Market Scan Results (SET100)",
+    "🌋 Market Bottom (WVF)",
     "🛠️ Advanced Tools / More Features"
 ])
 
@@ -3113,7 +3115,148 @@ with main_tabs[6]: # Market Scan Results (Hybrid)
     else:
         st.info("ℹ️ ยังไม่มีข้อมูลการสแกนในระบบ (กรุณากด Run SET100 Batch Scan หรือรอระบบ Auto Scan)")
 
-with main_tabs[7]: # Advanced Tools / More Features
+with main_tabs[7]: # Market Bottom (WVF)
+    try:
+        st.subheader("🌋 Market Bottom Analysis (Williams Vix Fix)")
+        st.info("🌋 **Williams Vix Fix (WVF):** เครื่องมือจับจุดกลับตัวที่ฐาน (Market Bottom) โดยวัดความผันผวนของราคาเทียบกับ High ในรอบ Lookback หาก WVF พุ่งทะลุ Upper Bollinger Band จะเกิดสัญญาณ Climax Spike")
+        
+        # 1. WVF Control Panel
+        with st.expander("⚙️ WVF Parameters & Control Panel", expanded=False):
+            c1, c2, c3, c4 = st.columns(4)
+            wvf_lookback = c1.number_input("Lookback Period", 10, 100, 22)
+            wvf_bb_len = c2.number_input("BB Length", 10, 100, 20)
+            wvf_bb_mult = c3.slider("BB Std Dev Multiplier", 1.0, 4.0, 2.0, 0.1)
+            wvf_percentile = c4.slider("Percentile High Threshold", 0.5, 0.99, 0.85, 0.05)
+            
+            wvf_scan_btn = st.button("🚀 Run WVF Market Scan", type="primary", use_container_width=True)
+
+        # 2. WVF Scanner Table
+        st.write("### 🔍 WVF Bottom Climax Scanner (Latest Signal)")
+        
+        # We need a list of tickers to scan. SET100 is standard in this app.
+        if 'set100_tickers' not in st.session_state:
+            try:
+                with open('tickers_config.json', 'r') as f:
+                    config = json.load(f)
+                    st.session_state['set100_tickers'] = config.get('set100', [])
+            except:
+                st.session_state['set100_tickers'] = ["AOT.BK", "CPALL.BK", "PTT.BK", "ADVANC.BK"] # Fallback
+
+        tickers = st.session_state['set100_tickers']
+        
+        # Results container
+        wvf_results = []
+        
+        if wvf_scan_btn:
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            for i, ticker in enumerate(tickers):
+                status_text.text(f"Scanning {ticker}...")
+                df_wvf = get_stock_data(ticker)
+                if df_wvf is not None and len(df_wvf) > wvf_lookback:
+                    df_wvf = calculate_wvf(df_wvf, wvf_lookback, wvf_bb_len, wvf_bb_mult, wvf_percentile)
+                    latest = df_wvf.iloc[-1]
+                    if latest['Is_WVF_Spike']:
+                        wvf_results.append({
+                            'Ticker': ticker,
+                            'Price': latest['Close'],
+                            'WVF Value': round(latest['WVF'], 2),
+                            'Upper BB': round(latest['WVF_Upper'], 2),
+                            'Signal': '🌋 BOTTOM CLIMAX'
+                        })
+                progress_bar.progress((i + 1) / len(tickers))
+            
+            status_text.empty()
+            progress_bar.empty()
+            
+            if wvf_results:
+                st.session_state['wvf_scan_results'] = pd.DataFrame(wvf_results)
+                st.success(f"พบหุ้น {len(wvf_results)} ตัวที่เกิดสัญญาณ WVF Climax!")
+            else:
+                st.session_state['wvf_scan_results'] = pd.DataFrame()
+                st.info("ไม่พบหุ้นที่เกิดสัญญาณ WVF Climax ในวันนี้")
+
+        # Display Scanner Table
+        if 'wvf_scan_results' in st.session_state and not st.session_state['wvf_scan_results'].empty:
+            st.dataframe(st.session_state['wvf_scan_results'], use_container_width=True)
+            selected_wvf_ticker = st.selectbox("เลือกหุ้นเพื่อดูรายละเอียดกราฟ:", st.session_state['wvf_scan_results']['Ticker'])
+        else:
+            selected_wvf_ticker = st.selectbox("เลือกหุ้นเพื่อวิเคราะห์ (Manual Selection):", tickers)
+
+        # 3. Interactive WVF Chart
+        if selected_wvf_ticker:
+            with st.spinner(f"Loading {selected_wvf_ticker} chart..."):
+                df_chart = get_stock_data(selected_wvf_ticker)
+                if df_chart is not None and len(df_chart) > wvf_lookback:
+                    df_chart = calculate_wvf(df_chart, wvf_lookback, wvf_bb_len, wvf_bb_mult, wvf_percentile)
+                    
+                    # Create Subplots
+                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                                       vertical_spacing=0.05, 
+                                       row_heights=[0.7, 0.3])
+                    
+                    # Panel 1: Candlestick
+                    fig.add_trace(go.Candlestick(
+                        x=df_chart.index,
+                        open=df_chart['Open'],
+                        high=df_chart['High'],
+                        low=df_chart['Low'],
+                        close=df_chart['Close'],
+                        name="Price"
+                    ), row=1, col=1)
+                    
+                    # Markers for WVF Spikes on main chart
+                    spikes = df_chart[df_chart['Is_WVF_Spike']]
+                    fig.add_trace(go.Scatter(
+                        x=spikes.index,
+                        y=spikes['Low'] * 0.98,
+                        mode='markers',
+                        marker=dict(symbol='circle', size=10, color='#00FF00', line=dict(width=2, color='white')),
+                        name='WVF Climax Signal'
+                    ), row=1, col=1)
+                    
+                    # Panel 2: WVF Bars
+                    # Color coding: Green for Spikes, Gray for Normal
+                    colors = ['#00FF00' if spike else '#888888' for spike in df_chart['Is_WVF_Spike']]
+                    
+                    fig.add_trace(go.Bar(
+                        x=df_chart.index,
+                        y=df_chart['WVF'],
+                        marker_color=colors,
+                        name='WVF Value',
+                        showlegend=False
+                    ), row=2, col=1)
+                    
+                    # Upper BB Line on Panel 2
+                    fig.add_trace(go.Scatter(
+                        x=df_chart.index,
+                        y=df_chart['WVF_Upper'],
+                        line=dict(color='rgba(0, 255, 0, 0.5)', width=1, dash='dash'),
+                        name='Upper BB (Climax Threshold)'
+                    ), row=2, col=1)
+                    
+                    # Formatting
+                    fig.update_layout(
+                        height=650,
+                        template='plotly_dark',
+                        xaxis_rangeslider_visible=False,
+                        margin=dict(l=10, r=10, t=30, b=10),
+                        showlegend=True,
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                    )
+                    
+                    # Invert Y-axis for WVF Panel to match screenshot style (pointing down)
+                    fig.update_yaxes(autorange="reversed", row=2, col=1)
+                    
+                    st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': False, 'responsive': True})
+                else:
+                    st.error(f"ไม่สามารถโหลดข้อมูลของ {selected_wvf_ticker} ได้")
+
+    except Exception as e:
+        st.error(f"เกิดข้อผิดพลาดในหน้า WVF Bottom Analysis: {e}")
+
+with main_tabs[8]: # Advanced Tools / More Features
     st.info("🛠️ Advanced Tools & Strategy Builder")
     st.caption("⚙️ **Advanced Features:** รวมเครื่องมือวิเคราะห์เชิงลึก เช่น การปรับจูน Parameter ด้วย AI, ระบบทดสอบย้อนหลัง (Backtest) และห้องทดลองรูปแบบราคา (Pattern Lab)")
     

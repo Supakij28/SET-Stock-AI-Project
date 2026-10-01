@@ -41,6 +41,31 @@ def calculate_quant_indicators(df, rsi_period=14, ema_fast=10, ema_slow=50):
     
     return d.dropna()
 
+def calculate_wvf(df, lookback=22, bb_length=20, bb_mult=2.0, percentile_high=0.85):
+    """
+    Williams Vix Fix (WVF) calculation by Chris Moody.
+    Detects market bottoms by measuring price volatility relative to its recent high.
+    """
+    d = df.copy()
+    
+    # Williams Vix Fix Formula
+    # WVF = ((Highest Close in Period - Low) / Highest Close in Period) * 100
+    d['Highest_Close'] = d['Close'].rolling(window=lookback).max()
+    d['WVF'] = ((d['Highest_Close'] - d['Low']) / d['Highest_Close']) * 100
+    
+    # Bollinger Bands on WVF
+    d['WVF_SMA'] = d['WVF'].rolling(window=bb_length).mean()
+    d['WVF_Std'] = d['WVF'].rolling(window=bb_length).std()
+    d['WVF_Upper'] = d['WVF_SMA'] + (bb_mult * d['WVF_Std'])
+    
+    # Percentile Threshold (Optional but common in WVF V3)
+    d['WVF_High_Range'] = d['WVF'].rolling(window=lookback).max() * percentile_high
+    
+    # Detection Flags
+    d['Is_WVF_Spike'] = (d['WVF'] >= d['WVF_Upper']) | (d['WVF'] >= d['WVF_High_Range'])
+    
+    return d.dropna()
+
 def get_pre_breakout_scanner(df, breakout_threshold=0.05, lookback=5, mode='bullish'):
     """Improved Scanner: Multivariate DTW + Slope Filter + Z-score Normalization."""
     if len(df) < 100: return {'matches': [], 'summary': {'count': 0}}
