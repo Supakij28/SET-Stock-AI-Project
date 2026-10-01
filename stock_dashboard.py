@@ -3267,34 +3267,39 @@ with main_tabs[7]: # Market Bottom (WVF)
                 if df_chart is not None and len(df_chart) > wvf_lookback:
                     df_chart = calculate_wvf(df_chart, wvf_lookback, wvf_bb_len, wvf_bb_mult, wvf_percentile)
                     
+                    # First Trigger Logic for cleaner markers
+                    df_chart['Is_WVF_First_Trigger'] = (df_chart['Is_WVF_Spike']) & (~df_chart['Is_WVF_Spike'].shift(1).fillna(False))
+                    
                     # Create Subplots
                     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                                       vertical_spacing=0.05, 
+                                       vertical_spacing=0.06, 
                                        row_heights=[0.7, 0.3])
                     
-                    # Panel 1: Candlestick
+                    # Panel 1: Candlestick (TradingView Style Colors)
                     fig.add_trace(go.Candlestick(
                         x=df_chart.index,
                         open=df_chart['Open'],
                         high=df_chart['High'],
                         low=df_chart['Low'],
                         close=df_chart['Close'],
-                        name="Price"
+                        name="Price",
+                        increasing_line_color='#089981', decreasing_line_color='#F23645',
+                        increasing_fillcolor='#089981', decreasing_fillcolor='#F23645'
                     ), row=1, col=1)
                     
-                    # Markers for WVF Spikes on main chart
-                    spikes = df_chart[df_chart['Is_WVF_Spike']]
+                    # Markers for WVF First Triggers only
+                    spikes = df_chart[df_chart['Is_WVF_First_Trigger']]
                     fig.add_trace(go.Scatter(
                         x=spikes.index,
-                        y=spikes['Low'] * 0.98,
+                        y=spikes['Low'] * 0.985,
                         mode='markers',
-                        marker=dict(symbol='circle', size=10, color='#00FF00', line=dict(width=2, color='white')),
+                        marker=dict(symbol='circle', size=7, color='#00FF00', line=dict(width=1, color='white')),
                         name='WVF Climax Signal'
                     ), row=1, col=1)
                     
                     # Panel 2: WVF Bars
-                    # Color coding: Green for Spikes, Gray for Normal
-                    colors = ['#00FF00' if spike else '#888888' for spike in df_chart['Is_WVF_Spike']]
+                    # Color coding: Green for Spikes, Dark Gray for Normal
+                    colors = ['#00FF00' if spike else '#363A45' for spike in df_chart['Is_WVF_Spike']]
                     
                     fig.add_trace(go.Bar(
                         x=df_chart.index,
@@ -3308,24 +3313,57 @@ with main_tabs[7]: # Market Bottom (WVF)
                     fig.add_trace(go.Scatter(
                         x=df_chart.index,
                         y=df_chart['WVF_Upper'],
-                        line=dict(color='rgba(0, 255, 0, 0.5)', width=1, dash='dash'),
-                        name='Upper BB (Climax Threshold)'
+                        line=dict(color='rgba(0, 255, 0, 0.6)', width=1.5, dash='dash'),
+                        name='Upper BB (Threshold)'
                     ), row=2, col=1)
                     
-                    # Formatting
+                    # Calculate default range (last 6 months)
+                    last_date = df_chart.index[-1]
+                    start_date_6m = last_date - pd.DateOffset(months=6)
+                    
+                    # Formatting & Range Selector
                     fig.update_layout(
-                        height=650,
+                        height=700,
                         template='plotly_dark',
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        plot_bgcolor='rgba(0,0,0,0)',
                         xaxis_rangeslider_visible=False,
-                        margin=dict(l=10, r=10, t=30, b=10),
+                        margin=dict(l=10, r=10, t=50, b=10),
                         showlegend=True,
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                        hovermode='x unified',
+                        dragmode='pan' # Better for mobile touch
                     )
                     
-                    # Invert Y-axis for WVF Panel to match screenshot style (pointing down)
-                    fig.update_yaxes(autorange="reversed", row=2, col=1)
+                    # X-Axis Enhancements: Range Selector & Range Breaks
+                    fig.update_xaxes(
+                        rangebreaks=[dict(bounds=["sat", "mon"])], # Hide weekends
+                        rangeselector=dict(
+                            buttons=list([
+                                dict(count=1, label="1M", step="month", stepmode="backward"),
+                                dict(count=3, label="3M", step="month", stepmode="backward"),
+                                dict(count=6, label="6M", step="month", stepmode="backward"),
+                                dict(count=1, label="1Y", step="year", stepmode="backward"),
+                                dict(step="all", label="ALL")
+                            ]),
+                            bgcolor="rgba(54, 58, 69, 0.8)",
+                            activecolor="#089981",
+                            font=dict(size=11)
+                        ),
+                        range=[start_date_6m, last_date], # Default to 6M
+                        row=1, col=1
+                    )
                     
-                    st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': False, 'responsive': True})
+                    # Invert Y-axis for WVF Panel
+                    fig.update_yaxes(autorange="reversed", row=2, col=1, gridcolor='rgba(255,255,255,0.05)')
+                    fig.update_yaxes(gridcolor='rgba(255,255,255,0.05)', row=1, col=1)
+                    
+                    st.plotly_chart(fig, use_container_width=True, config={
+                        'scrollZoom': True, 
+                        'responsive': True,
+                        'displaylogo': False,
+                        'modeBarButtonsToRemove': ['select2d', 'lasso2d']
+                    })
                 else:
                     st.error(f"ไม่สามารถโหลดข้อมูลของ {selected_wvf_ticker} ได้")
 
