@@ -3271,10 +3271,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                 if df_chart is not None and len(df_chart) > wvf_lookback:
                     df_chart = calculate_wvf(df_chart, wvf_lookback, wvf_bb_len, wvf_bb_mult, wvf_percentile)
                     
-                    # Truncate DataFrame to last 250 bars (approx 1 year) for better performance and clarity
-                    df_chart = df_chart.tail(250)
-                    
-                    # 1. WVF Signal Logic (Cooldown 5 days)
+                    # 1. WVF Signal Logic (Cooldown 5 days) - Calculate on full data
                     df_chart['Is_WVF_First_Trigger'] = False
                     last_wvf_idx = -10
                     for i in range(len(df_chart)):
@@ -3283,13 +3280,21 @@ with main_tabs[7]: # Market Bottom (WVF)
                                 df_chart.iloc[i, df_chart.columns.get_loc('Is_WVF_First_Trigger')] = True
                                 last_wvf_idx = i
                                 
-                    # 2. Silent Accumulation Logic (Vectorized for Chart)
+                    # 2. Silent Accumulation Logic (Vectorized) - Calculate on full data
                     df_chart['Pct_Change_Pct'] = df_chart['Close'].pct_change() * 100
                     df_chart['RV'] = df_chart['Volume'] / (df_chart['Volume'].rolling(20).mean() + 1e-9)
                     df_chart['Vol_Avg5'] = df_chart['Volume'].rolling(5).mean()
                     df_chart['Is_Vol_Compressed'] = (df_chart['Volume'] < df_chart['Vol_Avg5']) & (df_chart['RV'] >= 0.6) & (df_chart['RV'] <= 1.0)
                     df_chart['ATC_Risk'] = ((df_chart['High'] - df_chart['Close']) / df_chart['High']) * 100
                     df_chart['Is_Silent_Accum'] = (df_chart['Pct_Change_Pct'] > 0) & ((df_chart['Is_Vol_Compressed']) | ((df_chart['RV'] >= 0.8) & (df_chart['RV'] <= 1.2))) & (df_chart['ATC_Risk'] < 0.5)
+                    
+                    # Truncate DataFrame for plotting
+                    df_plot = df_chart.tail(250).copy()
+                    
+                    # Signal Summary Caption
+                    wvf_count = df_plot['Is_WVF_First_Trigger'].sum()
+                    sa_count = df_plot['Is_Silent_Accum'].sum()
+                    st.caption(f"📊 **Signal Summary ({selected_wvf_ticker}):** พบสัญญาณ WVF Climax: `{wvf_count}` ครั้ง | พบ Silent Accum: `{sa_count}` ครั้ง (ย้อนหลัง 1 ปี)")
                     
                     # Create Subplots
                     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
@@ -3298,18 +3303,18 @@ with main_tabs[7]: # Market Bottom (WVF)
                     
                     # Panel 1: Candlestick (TradingView Style Colors)
                     fig.add_trace(go.Candlestick(
-                        x=df_chart.index,
-                        open=df_chart['Open'],
-                        high=df_chart['High'],
-                        low=df_chart['Low'],
-                        close=df_chart['Close'],
+                        x=df_plot.index,
+                        open=df_plot['Open'],
+                        high=df_plot['High'],
+                        low=df_plot['Low'],
+                        close=df_plot['Close'],
                         name="Price",
                         increasing_line_color='#089981', decreasing_line_color='#F23645',
                         increasing_fillcolor='#089981', decreasing_fillcolor='#F23645'
                     ), row=1, col=1)
                     
                     # Markers for WVF First Triggers (Green Triangle)
-                    wvf_spikes = df_chart[df_chart['Is_WVF_First_Trigger']]
+                    wvf_spikes = df_plot[df_plot['Is_WVF_First_Trigger']]
                     fig.add_trace(go.Scatter(
                         x=wvf_spikes.index,
                         y=wvf_spikes['Low'] * 0.985,
@@ -3320,7 +3325,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                     
                     # Markers for Silent Accumulation (Blue Triangle)
                     if show_silent_accum:
-                        sa_spikes = df_chart[df_chart['Is_Silent_Accum']]
+                        sa_spikes = df_plot[df_plot['Is_Silent_Accum']]
                         fig.add_trace(go.Scatter(
                             x=sa_spikes.index,
                             y=sa_spikes['Low'] * 0.97, # Offset to avoid overlap
@@ -3331,12 +3336,12 @@ with main_tabs[7]: # Market Bottom (WVF)
                     
                     # Panel 2: WVF Bars + Volume Background
                     # Color coding: Green for Spikes, Dark Gray for Normal
-                    colors = ['#00FF00' if spike else '#363A45' for spike in df_chart['Is_WVF_Spike']]
+                    colors = ['#00FF00' if spike else '#363A45' for spike in df_plot['Is_WVF_Spike']]
                     
                     # Volume as Background (Overlay on Panel 2 with secondary axis or low opacity)
                     fig.add_trace(go.Bar(
-                        x=df_chart.index,
-                        y=df_chart['Volume'],
+                        x=df_plot.index,
+                        y=df_plot['Volume'],
                         name='Volume',
                         marker_color='rgba(128, 128, 128, 0.15)',
                         yaxis='y3', # Use a secondary Y axis for volume in Panel 2
@@ -3344,8 +3349,8 @@ with main_tabs[7]: # Market Bottom (WVF)
                     ), row=2, col=1)
 
                     fig.add_trace(go.Bar(
-                        x=df_chart.index,
-                        y=df_chart['WVF'],
+                        x=df_plot.index,
+                        y=df_plot['WVF'],
                         marker_color=colors,
                         name='WVF Value',
                         showlegend=False
@@ -3353,14 +3358,14 @@ with main_tabs[7]: # Market Bottom (WVF)
                     
                     # Upper BB Line on Panel 2
                     fig.add_trace(go.Scatter(
-                        x=df_chart.index,
-                        y=df_chart['WVF_Upper'],
+                        x=df_plot.index,
+                        y=df_plot['WVF_Upper'],
                         line=dict(color='rgba(0, 255, 0, 0.6)', width=1.5, dash='dash'),
                         name='Upper BB (Threshold)'
                     ), row=2, col=1)
                     
                     # Calculate default range (last 6 months)
-                    last_date = df_chart.index[-1]
+                    last_date = df_plot.index[-1]
                     start_date_6m = last_date - pd.DateOffset(months=6)
                     
                     # Formatting & Range Selector
@@ -3380,7 +3385,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                             side='right',
                             showgrid=False,
                             showticklabels=False,
-                            range=[0, df_chart['Volume'].max() * 3] # Keep bars low
+                            range=[0, df_plot['Volume'].max() * 3] # Keep bars low
                         )
                     )
                     
