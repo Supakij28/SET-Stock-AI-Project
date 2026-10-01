@@ -3267,7 +3267,10 @@ with main_tabs[7]: # Market Bottom (WVF)
                 if df_chart is not None and len(df_chart) > wvf_lookback:
                     df_chart = calculate_wvf(df_chart, wvf_lookback, wvf_bb_len, wvf_bb_mult, wvf_percentile)
                     
-                    # First Trigger Logic for cleaner markers
+                    # Truncate DataFrame to last 250 bars (approx 1 year) for better performance and clarity
+                    df_chart = df_chart.tail(250)
+                    
+                    # First Trigger Logic for cleaner markers (calculated on truncated data)
                     df_chart['Is_WVF_First_Trigger'] = (df_chart['Is_WVF_Spike']) & (~df_chart['Is_WVF_Spike'].shift(1).fillna(False))
                     
                     # Create Subplots
@@ -3348,7 +3351,8 @@ with main_tabs[7]: # Market Bottom (WVF)
                             ]),
                             bgcolor="rgba(54, 58, 69, 0.8)",
                             activecolor="#089981",
-                            font=dict(size=11)
+                            font=dict(size=11),
+                            active=2 # Set 6M as default active button
                         ),
                         range=[start_date_6m, last_date], # Default to 6M
                         row=1, col=1
