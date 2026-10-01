@@ -3270,8 +3270,14 @@ with main_tabs[7]: # Market Bottom (WVF)
                     # Truncate DataFrame to last 250 bars (approx 1 year) for better performance and clarity
                     df_chart = df_chart.tail(250)
                     
-                    # First Trigger Logic for cleaner markers (calculated on truncated data)
-                    df_chart['Is_WVF_First_Trigger'] = (df_chart['Is_WVF_Spike']) & (~df_chart['Is_WVF_Spike'].shift(1).fillna(False))
+                    # Signal Debounce & First Trigger Logic (Cooldown 5 days)
+                    df_chart['Is_WVF_First_Trigger'] = False
+                    last_signal_idx = -10
+                    for i in range(len(df_chart)):
+                        if df_chart['Is_WVF_Spike'].iloc[i]:
+                            if i - last_signal_idx >= 5: # 5-bar cooldown
+                                df_chart.iloc[i, df_chart.columns.get_loc('Is_WVF_First_Trigger')] = True
+                                last_signal_idx = i
                     
                     # Create Subplots
                     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
@@ -3294,9 +3300,9 @@ with main_tabs[7]: # Market Bottom (WVF)
                     spikes = df_chart[df_chart['Is_WVF_First_Trigger']]
                     fig.add_trace(go.Scatter(
                         x=spikes.index,
-                        y=spikes['Low'] * 0.985,
+                        y=spikes['Low'] * 0.98,
                         mode='markers',
-                        marker=dict(symbol='circle', size=7, color='#00FF00', line=dict(width=1, color='white')),
+                        marker=dict(symbol='triangle-up', size=10, color='#00FF00', line=dict(width=1, color='white')),
                         name='WVF Climax Signal'
                     ), row=1, col=1)
                     
@@ -3341,6 +3347,8 @@ with main_tabs[7]: # Market Bottom (WVF)
                     # X-Axis Enhancements: Range Selector & Range Breaks
                     fig.update_xaxes(
                         rangebreaks=[dict(bounds=["sat", "mon"])], # Hide weekends
+                        showgrid=True,
+                        gridcolor='rgba(128, 128, 128, 0.15)',
                         rangeselector=dict(
                             buttons=list([
                                 dict(count=1, label="1M", step="month", stepmode="backward"),
@@ -3357,9 +3365,11 @@ with main_tabs[7]: # Market Bottom (WVF)
                         row=1, col=1
                     )
                     
+                    fig.update_xaxes(showgrid=True, gridcolor='rgba(128, 128, 128, 0.15)', row=2, col=1)
+                    
                     # Invert Y-axis for WVF Panel
-                    fig.update_yaxes(autorange="reversed", row=2, col=1, gridcolor='rgba(255,255,255,0.05)')
-                    fig.update_yaxes(gridcolor='rgba(255,255,255,0.05)', row=1, col=1)
+                    fig.update_yaxes(autorange="reversed", row=2, col=1, showgrid=True, gridcolor='rgba(128, 128, 128, 0.15)')
+                    fig.update_yaxes(showgrid=True, gridcolor='rgba(128, 128, 128, 0.15)', row=1, col=1)
                     
                     st.plotly_chart(fig, use_container_width=True, config={
                         'scrollZoom': True, 
