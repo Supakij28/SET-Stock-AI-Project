@@ -3311,7 +3311,8 @@ with main_tabs[7]: # Market Bottom (WVF)
                         close=df_plot['Close'],
                         name="Price",
                         increasing_line_color='#089981', decreasing_line_color='#F23645',
-                        increasing_fillcolor='#089981', decreasing_fillcolor='#F23645'
+                        increasing_fillcolor='#089981', decreasing_fillcolor='#F23645',
+                        hovertemplate='O: %{open:.2f} H: %{high:.2f} L: %{low:.2f} C: %{close:.2f}<extra></extra>'
                     ), row=1, col=1)
                     
                     # Markers for WVF First Triggers (Green Triangle)
@@ -3321,7 +3322,8 @@ with main_tabs[7]: # Market Bottom (WVF)
                         y=wvf_spikes['Low'] * 0.985,
                         mode='markers',
                         marker=dict(symbol='triangle-up', size=10, color='#00FF00', line=dict(width=1, color='white')),
-                        name='▲ WVF Climax Signal'
+                        name='▲ WVF Climax Signal',
+                        hovertemplate='WVF Climax Triggered<extra></extra>'
                     ), row=1, col=1)
                     
                     # Markers for Silent Accumulation (Blue Triangle) - From Official Source
@@ -3332,7 +3334,8 @@ with main_tabs[7]: # Market Bottom (WVF)
                             y=sa_spikes['Low'] * 0.97, # Offset to avoid overlap
                             mode='markers',
                             marker=dict(symbol='triangle-up', size=10, color='#00BFFF', line=dict(width=1, color='white')),
-                            name='▲ Silent Accum Signal'
+                            name='▲ Silent Accum Signal',
+                            hovertemplate='Silent Accum Triggered<extra></extra>'
                         ), row=1, col=1)
                     
                     # Panel 2: WVF Bars (Restore Original Style)
@@ -3370,6 +3373,13 @@ with main_tabs[7]: # Market Bottom (WVF)
                         showlegend=True,
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                         hovermode='x unified',
+                        hoverlabel=dict(
+                            bgcolor="rgba(30, 34, 45, 0.9)", # Darker theme compatible background
+                            font_size=12,
+                            font_family="sans-serif",
+                            font_color="white",
+                            align="left"
+                        ),
                         dragmode='pan' # Better for mobile touch
                     )
                     
@@ -3378,6 +3388,11 @@ with main_tabs[7]: # Market Bottom (WVF)
                         rangebreaks=[dict(bounds=["sat", "mon"])], # Hide weekends
                         showgrid=True,
                         gridcolor='rgba(128, 128, 128, 0.15)',
+                        showspikes=True,
+                        spikemode='across',
+                        spikedash='dash',
+                        spikethickness=1,
+                        spikecolor='rgba(255, 255, 255, 0.5)',
                         rangeselector=dict(
                             buttons=list([
                                 dict(count=1, label="1M", step="month", stepmode="backward"),
