@@ -3119,7 +3119,16 @@ with main_tabs[7]: # Market Bottom (WVF)
             c1, c2, c3, c4, c5 = st.columns(5)
             wvf_lookback = c1.number_input("Lookback Period", 10, 100, 22)
             wvf_bb_len = c2.number_input("BB Length", 10, 100, 20)
-            wvf_bb_mult = c3.slider("BB Std Dev Multiplier", 1.0, 4.0, 2.0, 0.1)
+            
+            # WVF Sensitivity Level (Maps to BB StdDev Multiplier)
+            sensitivity_options = {
+                "High Sensitivity (BB StdDev = 1.2)": 1.2,
+                "Medium Sensitivity (BB StdDev = 1.5)": 1.5,
+                "Strict Climax (BB StdDev = 2.0)": 2.0
+            }
+            wvf_sensitivity = c3.selectbox("Sensitivity Level", list(sensitivity_options.keys()), index=1)
+            wvf_bb_mult = sensitivity_options[wvf_sensitivity]
+            
             wvf_percentile = c4.slider("Percentile High Threshold", 0.5, 0.99, 0.85, 0.05)
             
             # Historical Scan Period
@@ -3214,9 +3223,23 @@ with main_tabs[7]: # Market Bottom (WVF)
             # Sort by Date descending
             display_df = st.session_state['wvf_scan_results'].sort_values('Signal Date', ascending=False)
             st.dataframe(display_df, use_container_width=True)
-            selected_wvf_ticker = st.selectbox("เลือกหุ้นเพื่อดูรายละเอียดกราฟ:", display_df['Ticker'].unique())
-        else:
-            selected_wvf_ticker = st.selectbox("เลือกหุ้นเพื่อวิเคราะห์ (Manual Selection):", tickers)
+            
+        # Unified Ticker Selectbox with Prioritization
+        signaled_tickers = []
+        if 'wvf_scan_results' in st.session_state and not st.session_state['wvf_scan_results'].empty:
+            signaled_tickers = st.session_state['wvf_scan_results']['Ticker'].unique().tolist()
+        
+        # Build the full list: Signaled first, then the rest of SET100
+        sorted_tickers = signaled_tickers + [t for t in tickers if t not in signaled_tickers]
+        
+        # Display name mapping
+        ticker_display_map = {t: (f"🔥 {t} (Climax Signal)" if t in signaled_tickers else t) for t in sorted_tickers}
+        
+        selected_wvf_ticker = st.selectbox(
+            "เลือกหุ้นเพื่อวิเคราะห์ (Select Ticker to Analyze):",
+            options=sorted_tickers,
+            format_func=lambda x: ticker_display_map.get(x, x)
+        )
 
         # 3. Interactive WVF Chart
         if selected_wvf_ticker:
