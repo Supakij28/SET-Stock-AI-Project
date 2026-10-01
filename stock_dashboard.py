@@ -3116,16 +3116,30 @@ with main_tabs[7]: # Market Bottom (WVF)
         
         # 1. WVF Control Panel
         with st.expander("⚙️ WVF Parameters & Control Panel", expanded=False):
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3, c4, c5 = st.columns(5)
             wvf_lookback = c1.number_input("Lookback Period", 10, 100, 22)
             wvf_bb_len = c2.number_input("BB Length", 10, 100, 20)
             wvf_bb_mult = c3.slider("BB Std Dev Multiplier", 1.0, 4.0, 2.0, 0.1)
             wvf_percentile = c4.slider("Percentile High Threshold", 0.5, 0.99, 0.85, 0.05)
             
+            # Historical Scan Period
+            scan_range_options = {
+                "วันล่าสุด (Latest Day)": 1,
+                "ย้อนหลัง 5 วันทำการ": 5,
+                "ย้อนหลัง 20 วันทำการ (1 เดือน)": 20,
+                "เลือกวันที่เจาะจง (Custom Date)": 0
+            }
+            wvf_scan_mode = c5.selectbox("ช่วงเวลาสแกน", list(scan_range_options.keys()))
+            
+            wvf_scan_days = scan_range_options[wvf_scan_mode]
+            wvf_target_date = None
+            if wvf_scan_mode == "เลือกวันที่เจาะจง (Custom Date)":
+                wvf_target_date = st.date_input("เลือกวันที่ต้องการสแกน", datetime.now(SET_TZ).date())
+            
             wvf_scan_btn = st.button("🚀 Run WVF Market Scan", type="primary", use_container_width=True)
 
         # 2. WVF Scanner Table
-        st.write("### 🔍 WVF Bottom Climax Scanner (Latest Signal)")
+        st.write(f"### 🔍 WVF Bottom Climax Scanner ({wvf_scan_mode})")
         
         # We need a list of tickers to scan. SET100 is standard in this app.
         if 'set100_tickers' not in st.session_state:
@@ -3150,15 +3164,39 @@ with main_tabs[7]: # Market Bottom (WVF)
                 df_wvf = get_stock_data(ticker)
                 if df_wvf is not None and len(df_wvf) > wvf_lookback:
                     df_wvf = calculate_wvf(df_wvf, wvf_lookback, wvf_bb_len, wvf_bb_mult, wvf_percentile)
-                    latest = df_wvf.iloc[-1]
-                    if latest['Is_WVF_Spike']:
-                        wvf_results.append({
-                            'Ticker': ticker,
-                            'Price': latest['Close'],
-                            'WVF Value': round(latest['WVF'], 2),
-                            'Upper BB': round(latest['WVF_Upper'], 2),
-                            'Signal': '🌋 BOTTOM CLIMAX'
-                        })
+                    
+                    # Logic for Historical Scan
+                    if wvf_target_date:
+                        # Specific date check
+                        target_dt = pd.to_datetime(wvf_target_date).date()
+                        matches = df_wvf[df_wvf.index.date == target_dt]
+                        if not matches.empty and matches.iloc[0]['Is_WVF_Spike']:
+                            row = matches.iloc[0]
+                            wvf_results.append({
+                                'Ticker': ticker,
+                                'Signal Date': row.name.strftime('%Y-%m-%d'),
+                                'Days Ago': (datetime.now(SET_TZ).date() - row.name.date()).days,
+                                'Price': row['Close'],
+                                'WVF Value': round(row['WVF'], 2),
+                                'Upper BB': round(row['WVF_Upper'], 2),
+                                'Signal': '🌋 BOTTOM CLIMAX'
+                            })
+                    else:
+                        # Range check (Latest, 5 days, 20 days)
+                        recent_df = df_wvf.tail(wvf_scan_days)
+                        spikes = recent_df[recent_df['Is_WVF_Spike']]
+                        
+                        for date, row in spikes.iterrows():
+                            wvf_results.append({
+                                'Ticker': ticker,
+                                'Signal Date': date.strftime('%Y-%m-%d'),
+                                'Days Ago': (datetime.now(SET_TZ).date() - date.date()).days,
+                                'Price': row['Close'],
+                                'WVF Value': round(row['WVF'], 2),
+                                'Upper BB': round(row['WVF_Upper'], 2),
+                                'Signal': '🌋 BOTTOM CLIMAX'
+                            })
+                            
                 progress_bar.progress((i + 1) / len(tickers))
             
             status_text.empty()
@@ -3166,15 +3204,17 @@ with main_tabs[7]: # Market Bottom (WVF)
             
             if wvf_results:
                 st.session_state['wvf_scan_results'] = pd.DataFrame(wvf_results)
-                st.success(f"พบหุ้น {len(wvf_results)} ตัวที่เกิดสัญญาณ WVF Climax!")
+                st.success(f"พบสัญญาณ WVF Climax ทั้งหมด {len(wvf_results)} จุด ในช่วงเวลาที่เลือก!")
             else:
                 st.session_state['wvf_scan_results'] = pd.DataFrame()
-                st.info("ไม่พบหุ้นที่เกิดสัญญาณ WVF Climax ในวันนี้")
+                st.info(f"ไม่พบหุ้นที่เกิดสัญญาณ WVF Climax ในช่วง {wvf_scan_mode}")
 
         # Display Scanner Table
         if 'wvf_scan_results' in st.session_state and not st.session_state['wvf_scan_results'].empty:
-            st.dataframe(st.session_state['wvf_scan_results'], use_container_width=True)
-            selected_wvf_ticker = st.selectbox("เลือกหุ้นเพื่อดูรายละเอียดกราฟ:", st.session_state['wvf_scan_results']['Ticker'])
+            # Sort by Date descending
+            display_df = st.session_state['wvf_scan_results'].sort_values('Signal Date', ascending=False)
+            st.dataframe(display_df, use_container_width=True)
+            selected_wvf_ticker = st.selectbox("เลือกหุ้นเพื่อดูรายละเอียดกราฟ:", display_df['Ticker'].unique())
         else:
             selected_wvf_ticker = st.selectbox("เลือกหุ้นเพื่อวิเคราะห์ (Manual Selection):", tickers)
 
