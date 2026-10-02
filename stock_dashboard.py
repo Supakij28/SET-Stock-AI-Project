@@ -3376,7 +3376,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                         hovermode='x',
                         hoverlabel=dict(
-                            bgcolor="rgba(30, 30, 30, 0.6)", # High transparency to see through to candles
+                            bgcolor="rgba(30, 30, 30, 0.8)", # High transparency
                             font_size=12,
                             font_family="sans-serif",
                             font_color="white",
@@ -3386,17 +3386,21 @@ with main_tabs[7]: # Market Bottom (WVF)
                         dragmode='pan' # Better for mobile touch
                     )
                     
+                    # Vertical Crosshair (Spike lines) across both subplots
+                    fig.update_xaxes(
+                        showspikes=True,
+                        spikemode='across+marker',
+                        spikesnap='cursor',
+                        spikethickness=1,
+                        spikecolor='gray',
+                        spikedash='dash'
+                    )
+                    
                     # X-Axis Enhancements: Range Selector & Range Breaks
                     fig.update_xaxes(
                         rangebreaks=[dict(bounds=["sat", "mon"])], # Hide weekends
                         showgrid=True,
                         gridcolor='rgba(128, 128, 128, 0.15)',
-                        showspikes=True,
-                        spikemode='across',
-                        spikesnap='cursor',
-                        spikethickness=1,
-                        spikecolor='gray',
-                        spikedash='dash',
                         rangeselector=dict(
                             buttons=list([
                                 dict(count=1, label="1M", step="month", stepmode="backward"),
@@ -3437,7 +3441,8 @@ with main_tabs[7]: # Market Bottom (WVF)
                         'displaylogo': False,
                         'displayModeBar': True,
                         'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'eraseshape'],
-                        'modeBarButtonsToRemove': ['select2d', 'lasso2d']
+                        'modeBarButtonsToRemove': ['select2d', 'lasso2d'],
+                        'toImageButtonOptions': {'format': 'png', 'filename': 'wvf_chart'}
                     })
                 else:
                     st.error(f"ไม่สามารถโหลดข้อมูลของ {selected_wvf_ticker} ได้")
