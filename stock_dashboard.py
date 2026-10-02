@@ -3302,8 +3302,8 @@ with main_tabs[7]: # Market Bottom (WVF)
                     # Fix Mobile Pinch-to-zoom / Touch Interaction
                     st.markdown("""
                         <style>
-                        .js-plotly-plot .plotly .main-svg {
-                            touch-action: manipulation !important;
+                        .js-plotly-plot .plotly .draglayer {
+                            touch-action: none !important;
                         }
                         </style>
                     """, unsafe_allow_html=True)
@@ -3322,8 +3322,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                         close=df_plot['Close'],
                         name="Price",
                         increasing_line_color='#089981', decreasing_line_color='#F23645',
-                        increasing_fillcolor='#089981', decreasing_fillcolor='#F23645',
-                        hovertemplate='O: %{open:.2f} H: %{high:.2f} L: %{low:.2f} C: %{close:.2f}<extra></extra>'
+                        increasing_fillcolor='#089981', decreasing_fillcolor='#F23645'
                     ), row=1, col=1)
                     
                     # Markers for WVF First Triggers (Green Triangle)
@@ -3333,8 +3332,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                         y=wvf_spikes['Low'] * 0.985,
                         mode='markers',
                         marker=dict(symbol='triangle-up', size=10, color='#00FF00', line=dict(width=1, color='white')),
-                        name='▲ WVF Climax Signal',
-                        hovertemplate='WVF Climax Triggered<extra></extra>'
+                        name='▲ WVF Climax Signal'
                     ), row=1, col=1)
                     
                     # Markers for Silent Accumulation (Blue Triangle) - From Official Source
@@ -3345,8 +3343,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                             y=sa_spikes['Low'] * 0.97, # Offset to avoid overlap
                             mode='markers',
                             marker=dict(symbol='triangle-up', size=10, color='#00BFFF', line=dict(width=1, color='white')),
-                            name='▲ Silent Accum Signal',
-                            hovertemplate='Silent Accum Triggered<extra></extra>'
+                            name='▲ Silent Accum Signal'
                         ), row=1, col=1)
                     
                     # Panel 2: WVF Bars (Restore Original Style)
@@ -3384,11 +3381,15 @@ with main_tabs[7]: # Market Bottom (WVF)
                         showlegend=True,
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                         hovermode='x unified',
+                        hoverdistance=100,
+                        spikedistance=1000,
                         hoverlabel=dict(
-                            bgcolor="rgba(20, 20, 20, 0.8)",
+                            bgcolor="rgba(15, 23, 42, 0.85)",
                             font_size=11,
+                            font_family="sans-serif",
                             font_color="white",
-                            align="left"
+                            align="left",
+                            namelength=-1
                         ),
                         dragmode='pan'
                     )
@@ -3396,7 +3397,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                     # Vertical Crosshair (Spike lines) across both subplots (100% Sync)
                     fig.update_xaxes(
                         showspikes=True,
-                        spikemode='across+marker',
+                        spikemode='across',
                         spikesnap='cursor',
                         spikethickness=1,
                         spikecolor='gray',
@@ -3428,7 +3429,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                     # Ensure spikes and grid on row 2
                     fig.update_xaxes(
                         showspikes=True,
-                        spikemode='across+marker',
+                        spikemode='across',
                         spikesnap='cursor',
                         spikethickness=1,
                         spikecolor='gray',
@@ -3458,7 +3459,9 @@ with main_tabs[7]: # Market Bottom (WVF)
                         'scrollZoom': True, 
                         'responsive': True,
                         'displaylogo': False,
-                        'displayModeBar': False,
+                        'displayModeBar': 'hover',
+                        'modeBarButtonsToRemove': ['select2d', 'lasso2d'],
+                        'doubleClick': 'reset',
                         'toImageButtonOptions': {'format': 'png', 'filename': 'wvf_chart'}
                     })
                 else:
