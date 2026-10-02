@@ -3299,6 +3299,21 @@ with main_tabs[7]: # Market Bottom (WVF)
                     sa_count = df_plot['Is_Silent_Accum'].sum()
                     st.caption(f"📊 **Signal Summary ({selected_wvf_ticker}):** พบสัญญาณ WVF Climax: `{wvf_count}` ครั้ง | พบ Silent Accum: `{sa_count}` ครั้ง (ย้อนหลัง 1 ปี)")
                     
+                    # 3. Top-Left Overlay Legend (TradingView Style) - Showing Latest Data
+                    latest = df_plot.iloc[-1]
+                    st.markdown(f"""
+                        <div style='background-color: rgba(15, 23, 42, 0.9); padding: 12px; border-radius: 6px; border-left: 4px solid #089981; margin-bottom: 15px; font-family: sans-serif;'>
+                            <span style='color: #94a3b8; font-size: 0.85rem; font-weight: 600;'>{latest.name.strftime('%d %b %Y')}</span>
+                            <div style='margin-top: 5px; display: flex; gap: 15px; flex-wrap: wrap;'>
+                                <span style='color: white; font-size: 0.95rem;'><b>O:</b> {latest['Open']:.2f}</span>
+                                <span style='color: white; font-size: 0.95rem;'><b>H:</b> {latest['High']:.2f}</span>
+                                <span style='color: white; font-size: 0.95rem;'><b>L:</b> {latest['Low']:.2f}</span>
+                                <span style='color: white; font-size: 0.95rem;'><b>C:</b> {latest['Close']:.2f}</span>
+                                <span style='color: #00FF00; font-size: 0.95rem;'><b>WVF:</b> {latest['WVF']:.2f}</span>
+                            </div>
+                        </div>
+                    """, unsafe_allow_html=True)
+
                     # Fix Mobile Pinch-to-zoom / Touch Interaction
                     st.markdown("""
                         <style>
@@ -3313,7 +3328,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                                        vertical_spacing=0.03, 
                                        row_heights=[1 - wvf_panel_ratio, wvf_panel_ratio])
                     
-                    # Panel 1: Candlestick (TradingView Style Colors)
+                    # Panel 1: Candlestick (TradingView Style Colors) - HOVER DISABLED
                     fig.add_trace(go.Candlestick(
                         x=df_plot.index,
                         open=df_plot['Open'],
@@ -3322,17 +3337,19 @@ with main_tabs[7]: # Market Bottom (WVF)
                         close=df_plot['Close'],
                         name="Price",
                         increasing_line_color='#089981', decreasing_line_color='#F23645',
-                        increasing_fillcolor='#089981', decreasing_fillcolor='#F23645'
+                        increasing_fillcolor='#089981', decreasing_fillcolor='#F23645',
+                        hoverinfo='none'
                     ), row=1, col=1)
                     
-                    # Markers for WVF First Triggers (Green Triangle)
+                    # Markers for WVF First Triggers (Green Triangle) - HOVER DISABLED
                     wvf_spikes = df_plot[df_plot['Is_WVF_First_Trigger']]
                     fig.add_trace(go.Scatter(
                         x=wvf_spikes.index,
                         y=wvf_spikes['Low'] * 0.985,
                         mode='markers',
                         marker=dict(symbol='triangle-up', size=10, color='#00FF00', line=dict(width=1, color='white')),
-                        name='▲ WVF Climax Signal'
+                        name='▲ WVF Climax Signal',
+                        hoverinfo='none'
                     ), row=1, col=1)
                     
                     # Markers for Silent Accumulation (Blue Triangle) - From Official Source
@@ -3343,11 +3360,11 @@ with main_tabs[7]: # Market Bottom (WVF)
                             y=sa_spikes['Low'] * 0.97, # Offset to avoid overlap
                             mode='markers',
                             marker=dict(symbol='triangle-up', size=10, color='#00BFFF', line=dict(width=1, color='white')),
-                            name='▲ Silent Accum Signal'
+                            name='▲ Silent Accum Signal',
+                            hoverinfo='none'
                         ), row=1, col=1)
                     
-                    # Panel 2: WVF Bars (Restore Original Style)
-                    # Color coding: Green for Spikes, Dark Gray for Normal
+                    # Panel 2: WVF Bars - HOVER DISABLED
                     colors = ['#00FF00' if spike else '#363A45' for spike in df_plot['Is_WVF_Spike']]
                     
                     fig.add_trace(go.Bar(
@@ -3355,15 +3372,17 @@ with main_tabs[7]: # Market Bottom (WVF)
                         y=df_plot['WVF'],
                         marker_color=colors,
                         name='WVF Value',
-                        showlegend=False
+                        showlegend=False,
+                        hoverinfo='none'
                     ), row=2, col=1)
                     
-                    # Upper BB Line on Panel 2 (Restore Original Style)
+                    # Upper BB Line on Panel 2 - HOVER DISABLED
                     fig.add_trace(go.Scatter(
                         x=df_plot.index,
                         y=df_plot['WVF_Upper'],
-                        line=dict(color='rgba(173, 255, 47, 0.7)', width=1.5, dash='dash'), # GreenYellow dashed
-                        name='Upper BB (Threshold)'
+                        line=dict(color='rgba(173, 255, 47, 0.7)', width=1.5, dash='dash'), 
+                        name='Upper BB (Threshold)',
+                        hoverinfo='none'
                     ), row=2, col=1)
                     
                     # Calculate default range (last 6 months)
@@ -3380,18 +3399,8 @@ with main_tabs[7]: # Market Bottom (WVF)
                         margin=dict(l=10, r=10, t=50, b=10),
                         showlegend=True,
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                        hovermode='x unified',
-                        hoverdistance=100,
-                        spikedistance=1000,
-                        hoverlabel=dict(
-                            bgcolor="rgba(15, 23, 42, 0.85)",
-                            font_size=11,
-                            font_family="sans-serif",
-                            font_color="white",
-                            align="left",
-                            namelength=-1
-                        ),
-                        dragmode='pan'
+                        hovermode=False, # HOVER BOXES DISABLED
+                        dragmode='pan' # Native drag/pan for mobile
                     )
                     
                     # Vertical Crosshair (Spike lines) across both subplots (100% Sync)
@@ -3402,7 +3411,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                         spikethickness=1,
                         spikecolor='gray',
                         spikedash='dash',
-                        matches='x'
+                        matches='x' # CRITICAL: Sync axes and spikes across subplots
                     )
                     
                     # X-Axis Enhancements: Range Selector & Range Breaks
@@ -3459,9 +3468,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                         'scrollZoom': True, 
                         'responsive': True,
                         'displaylogo': False,
-                        'displayModeBar': 'hover',
-                        'modeBarButtonsToRemove': ['select2d', 'lasso2d'],
-                        'doubleClick': 'reset',
+                        'displayModeBar': False, # Requested to hide modebar
                         'toImageButtonOptions': {'format': 'png', 'filename': 'wvf_chart'}
                     })
                 else:
