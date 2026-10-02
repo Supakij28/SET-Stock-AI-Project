@@ -3328,7 +3328,9 @@ with main_tabs[7]: # Market Bottom (WVF)
                         close=df_plot['Close'],
                         name="Price",
                         increasing_line_color='#089981', decreasing_line_color='#F23645',
-                        increasing_fillcolor='#089981', decreasing_fillcolor='#F23645'
+                        increasing_fillcolor='#089981', decreasing_fillcolor='#F23645',
+                        hoverinfo='none',
+                        hovertemplate=None
                     ), row=1, col=1)
                     
                     # Markers for WVF First Triggers (Green Triangle)
@@ -3338,7 +3340,9 @@ with main_tabs[7]: # Market Bottom (WVF)
                         y=wvf_spikes['Low'] * 0.985,
                         mode='markers',
                         marker=dict(symbol='triangle-up', size=10, color='#00FF00', line=dict(width=1, color='white')),
-                        name='▲ WVF Climax Signal'
+                        name='▲ WVF Climax Signal',
+                        hoverinfo='none',
+                        hovertemplate=None
                     ), row=1, col=1)
                     
                     # Markers for Silent Accumulation (Blue Triangle) - From Official Source
@@ -3349,7 +3353,9 @@ with main_tabs[7]: # Market Bottom (WVF)
                             y=sa_spikes['Low'] * 0.97, # Offset to avoid overlap
                             mode='markers',
                             marker=dict(symbol='triangle-up', size=10, color='#00BFFF', line=dict(width=1, color='white')),
-                            name='▲ Silent Accum Signal'
+                            name='▲ Silent Accum Signal',
+                            hoverinfo='none',
+                            hovertemplate=None
                         ), row=1, col=1)
                     
                     # Panel 2: WVF Bars
@@ -3360,7 +3366,9 @@ with main_tabs[7]: # Market Bottom (WVF)
                         y=df_plot['WVF'],
                         marker_color=colors,
                         name='WVF Value',
-                        showlegend=False
+                        showlegend=False,
+                        hoverinfo='none',
+                        hovertemplate=None
                     ), row=2, col=1)
                     
                     # Upper BB Line on Panel 2
@@ -3368,7 +3376,9 @@ with main_tabs[7]: # Market Bottom (WVF)
                         x=df_plot.index,
                         y=df_plot['WVF_Upper'],
                         line=dict(color='rgba(173, 255, 47, 0.7)', width=1.5, dash='dash'), 
-                        name='Upper BB (Threshold)'
+                        name='Upper BB (Threshold)',
+                        hoverinfo='none',
+                        hovertemplate=None
                     ), row=2, col=1)
                     
                     # Calculate default range (last 6 months)
@@ -3385,23 +3395,14 @@ with main_tabs[7]: # Market Bottom (WVF)
                         margin=dict(l=10, r=10, t=50, b=10),
                         showlegend=True,
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                        hovermode="x unified",
-                        hoverdistance=100,
-                        spikedistance=1000,
-                        hoverlabel=dict(
-                            bgcolor="rgba(15, 23, 42, 0.65)",
-                            font_color="white",
-                            font_size=11,
-                            align="left",
-                            namelength=-1
-                        ),
+                        hovermode="x", # Spike line capture enabled, but Hover Box suppressed by trace settings
                         dragmode='pan'
                     )
                     
                     # Vertical Crosshair (Spike lines) across both subplots (100% Sync)
                     fig.update_xaxes(
                         showspikes=True,
-                        spikemode='across+marker',
+                        spikemode='across',
                         spikesnap='cursor',
                         spikethickness=1,
                         spikecolor='gray',
@@ -3434,7 +3435,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                     # Ensure spikes and grid on row 2
                     fig.update_xaxes(
                         showspikes=True,
-                        spikemode='across+marker',
+                        spikemode='across',
                         spikesnap='cursor',
                         spikethickness=1,
                         spikecolor='gray',
@@ -3452,12 +3453,24 @@ with main_tabs[7]: # Market Bottom (WVF)
                         showgrid=True, 
                         gridcolor='rgba(128, 128, 128, 0.15)',
                         zeroline=True,
+                        showspikes=True,
+                        spikemode='across',
+                        spikesnap='cursor',
+                        spikethickness=1,
+                        spikecolor='gray',
+                        spikedash='dash',
                         row=2, col=1
                     )
                     fig.update_yaxes(
                         fixedrange=False, 
                         showgrid=True, 
                         gridcolor='rgba(128, 128, 128, 0.15)', 
+                        showspikes=True,
+                        spikemode='across',
+                        spikesnap='cursor',
+                        spikethickness=1,
+                        spikecolor='gray',
+                        spikedash='dash',
                         row=1, col=1
                     )
                     
