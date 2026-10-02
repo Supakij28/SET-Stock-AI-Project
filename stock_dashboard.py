@@ -3339,7 +3339,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                         x=wvf_spikes.index,
                         y=wvf_spikes['Low'] * 0.985,
                         mode='markers',
-                        marker=dict(symbol='triangle-up', size=10, color='#00FF00', line=dict(width=1, color='white')),
+                        marker=dict(symbol='triangle-up', size=11, color='#00FF00', line=dict(width=1, color='white')),
                         name='▲ WVF Climax Signal',
                         hoverinfo='none',
                         hovertemplate=None
@@ -3352,7 +3352,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                             x=sa_spikes.index,
                             y=sa_spikes['Low'] * 0.97, # Offset to avoid overlap
                             mode='markers',
-                            marker=dict(symbol='triangle-up', size=10, color='#00BFFF', line=dict(width=1, color='white')),
+                            marker=dict(symbol='triangle-up', size=11, color='#FF8C00', line=dict(width=1, color='white')),
                             name='▲ Silent Accum Signal',
                             hoverinfo='none',
                             hovertemplate=None
@@ -3394,7 +3394,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                         xaxis_rangeslider_visible=False,
                         margin=dict(l=10, r=10, t=50, b=10),
                         showlegend=True,
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.01),
                         hovermode="x", # Spike line capture enabled, but Hover Box suppressed by trace settings
                         dragmode='pan'
                     )
@@ -3477,7 +3477,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                     st.plotly_chart(fig, use_container_width=True, config={
                         'scrollZoom': True, 
                         'responsive': True,
-                        'displayModeBar': True
+                        'displayModeBar': False
                     })
                 else:
                     st.error(f"ไม่สามารถโหลดข้อมูลของ {selected_wvf_ticker} ได้")
