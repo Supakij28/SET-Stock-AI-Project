@@ -3299,6 +3299,15 @@ with main_tabs[7]: # Market Bottom (WVF)
                     sa_count = df_plot['Is_Silent_Accum'].sum()
                     st.caption(f"📊 **Signal Summary ({selected_wvf_ticker}):** พบสัญญาณ WVF Climax: `{wvf_count}` ครั้ง | พบ Silent Accum: `{sa_count}` ครั้ง (ย้อนหลัง 1 ปี)")
                     
+                    # Fix Mobile Pinch-to-zoom / Touch Interaction
+                    st.markdown("""
+                        <style>
+                        .js-plotly-plot .plotly .main-svg {
+                            touch-action: manipulation !important;
+                        }
+                        </style>
+                    """, unsafe_allow_html=True)
+
                     # Create Subplots
                     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
                                        vertical_spacing=0.03, 
@@ -3374,26 +3383,27 @@ with main_tabs[7]: # Market Bottom (WVF)
                         margin=dict(l=10, r=10, t=50, b=10),
                         showlegend=True,
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                        hovermode='x',
+                        hovermode='x unified',
                         hoverlabel=dict(
-                            bgcolor="rgba(30, 30, 30, 0.8)", # High transparency
-                            font_size=12,
+                            bgcolor="rgba(20, 20, 20, 0.8)",
+                            font_size=11,
                             font_family="sans-serif",
                             font_color="white",
                             align="left",
-                            namelength=-1 # Show full trace names
+                            namelength=-1
                         ),
                         dragmode='pan' # Better for mobile touch
                     )
                     
-                    # Vertical Crosshair (Spike lines) across both subplots
+                    # Vertical Crosshair (Spike lines) across both subplots (100% Sync)
                     fig.update_xaxes(
                         showspikes=True,
                         spikemode='across+marker',
                         spikesnap='cursor',
                         spikethickness=1,
                         spikecolor='gray',
-                        spikedash='dash'
+                        spikedash='dash',
+                        matches='x' # Synchronize axes and spikes
                     )
                     
                     # X-Axis Enhancements: Range Selector & Range Breaks
@@ -3439,9 +3449,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                         'scrollZoom': True, 
                         'responsive': True,
                         'displaylogo': False,
-                        'displayModeBar': True,
-                        'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'eraseshape'],
-                        'modeBarButtonsToRemove': ['select2d', 'lasso2d'],
+                        'displayModeBar': False, # Requested by user for mobile
                         'toImageButtonOptions': {'format': 'png', 'filename': 'wvf_chart'}
                     })
                 else:
