@@ -3387,12 +3387,10 @@ with main_tabs[7]: # Market Bottom (WVF)
                         hoverlabel=dict(
                             bgcolor="rgba(20, 20, 20, 0.8)",
                             font_size=11,
-                            font_family="sans-serif",
                             font_color="white",
-                            align="left",
-                            namelength=-1
+                            align="left"
                         ),
-                        dragmode='pan' # Better for mobile touch
+                        dragmode='pan'
                     )
                     
                     # Vertical Crosshair (Spike lines) across both subplots (100% Sync)
@@ -3403,7 +3401,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                         spikethickness=1,
                         spikecolor='gray',
                         spikedash='dash',
-                        matches='x' # Synchronize axes and spikes
+                        matches='x'
                     )
                     
                     # X-Axis Enhancements: Range Selector & Range Breaks
@@ -3427,7 +3425,18 @@ with main_tabs[7]: # Market Bottom (WVF)
                         row=1, col=1
                     )
                     
-                    fig.update_xaxes(showgrid=True, gridcolor='rgba(128, 128, 128, 0.15)', row=2, col=1)
+                    # Ensure spikes and grid on row 2
+                    fig.update_xaxes(
+                        showspikes=True,
+                        spikemode='across+marker',
+                        spikesnap='cursor',
+                        spikethickness=1,
+                        spikecolor='gray',
+                        spikedash='dash',
+                        showgrid=True, 
+                        gridcolor='rgba(128, 128, 128, 0.15)', 
+                        row=2, col=1
+                    )
                     
                     # Invert Y-axis for WVF Panel & Enable Scaling
                     fig.update_yaxes(
@@ -3449,7 +3458,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                         'scrollZoom': True, 
                         'responsive': True,
                         'displaylogo': False,
-                        'displayModeBar': False, # Requested by user for mobile
+                        'displayModeBar': False,
                         'toImageButtonOptions': {'format': 'png', 'filename': 'wvf_chart'}
                     })
                 else:
