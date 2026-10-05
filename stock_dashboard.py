@@ -15,6 +15,7 @@ import google.generativeai as genai
 import json
 import pytz
 import textwrap
+import backtest_engine
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from scanner_engine import (
@@ -2085,6 +2086,7 @@ main_tabs = st.tabs([
     "💎 SILENT ACCUM Insight",
     "📊 Market Scan Results (SET100)",
     "🌋 Market Bottom (WVF)",
+    "🧪 WVF Backtest & Optimizer",
     "🛠️ Advanced Tools / More Features"
 ])
 
@@ -3503,7 +3505,117 @@ with main_tabs[7]: # Market Bottom (WVF)
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในหน้า WVF Bottom Analysis: {e}")
 
-with main_tabs[8]: # Advanced Tools / More Features
+with main_tabs[8]: # WVF Strategy Backtest & Optimizer
+    try:
+        st.subheader("🧪 WVF Strategy Backtest & Grid Search Optimizer")
+        st.info("🧪 **Backtest Engine:** ทดสอบย้อนหลังและหาค่าพารามิเตอร์ที่เหมาะสมที่สุด (Optimization) สำหรับกลยุทธ์ WVF Bottom Climax โดยไม่มี Look-ahead bias")
+        
+        # 1. Selection & Parameters
+        with st.expander("⚙️ Backtest Settings & Optimizer Grid", expanded=True):
+            col_bt1, col_bt2, col_bt3 = st.columns(3)
+            
+            with col_bt1:
+                st.markdown("### 📊 Asset & Capital")
+                bt_ticker = st.selectbox("Select Stock for Backtest", st.session_state.get('set100_tickers', ["ADVANC.BK"]), key="bt_ticker")
+                initial_cap = st.number_input("Initial Capital (THB)", 10000, 1000000, 100000, 10000)
+                comm_rate = st.number_input("Commission (%)", 0.0, 1.0, 0.157, 0.01) / 100
+                slip_rate = st.number_input("Slippage (%)", 0.0, 1.0, 0.10, 0.01) / 100
+                
+            with col_bt2:
+                st.markdown("### 🌋 WVF Parameters")
+                lookback_range = st.slider("Lookback Period Range", 10, 60, (20, 30), 2)
+                bb_mult_range = st.slider("BB StdDev Range", 1.0, 3.0, (1.5, 2.5), 0.25)
+                
+            with col_bt3:
+                st.markdown("### 🚪 Exit Strategy")
+                exit_choice = st.selectbox("Exit Rule", ["Fixed Holding Days", "Profit Target / Stop Loss", "RSI Overbought"])
+                
+                if exit_choice == "Fixed Holding Days":
+                    exit_val = st.slider("Days to Hold", 1, 30, 10)
+                    exit_type = 'days'
+                elif exit_choice == "Profit Target / Stop Loss":
+                    tp = st.slider("Take Profit (%)", 1.0, 30.0, 10.0) / 100
+                    sl = st.slider("Stop Loss (%)", 1.0, 20.0, 5.0) / 100
+                    exit_val = (tp, sl)
+                    exit_type = 'profit_stop'
+                else:
+                    exit_val = st.slider("RSI Level", 50, 90, 70)
+                    exit_type = 'rsi'
+
+            st.divider()
+            col_btn1, col_btn2 = st.columns(2)
+            run_bt = col_btn1.button("🚀 Run Single Backtest", use_container_width=True, type="primary")
+            run_opt = col_btn2.button("🔍 Run Grid Search Optimizer", use_container_width=True)
+
+        # 2. Execution Logic
+        if run_bt or run_opt:
+            df_bt = get_stock_data(bt_ticker)
+            if df_bt is not None and not df_bt.empty:
+                if run_bt:
+                    params = {
+                        'initial_capital': initial_cap,
+                        'commission': comm_rate,
+                        'slippage': slip_rate,
+                        'lookback': lookback_range[0] if isinstance(lookback_range, tuple) else lookback_range,
+                        'bb_mult': bb_mult_range[0] if isinstance(bb_mult_range, tuple) else bb_mult_range,
+                        'exit_type': exit_type,
+                        'exit_value': exit_val
+                    }
+                    
+                    with st.spinner("Running backtest..."):
+                        results = backtest_engine.run_wvf_backtest(df_bt, params)
+                    
+                    if results:
+                        summary = results['summary']
+                        # A. Metrics Cards
+                        st.write("### 📈 Performance Summary")
+                        m1, m2, m3, m4, m5 = st.columns(5)
+                        m1.metric("Net Profit", f"{summary.get('Net Profit (%)', 0)}%")
+                        m2.metric("Win Rate", f"{summary.get('Win Rate (%)', 0)}%")
+                        m3.metric("Max Drawdown", f"{summary.get('Max Drawdown (%)', 0)}%")
+                        m4.metric("Sharpe Ratio", summary.get('Sharpe Ratio', 0))
+                        m5.metric("Total Trades", summary.get('Total Trades', 0))
+                        
+                        # B. Equity Curve
+                        st.write("### 📊 Equity Curve")
+                        fig_equity = go.Figure()
+                        fig_equity.add_trace(go.Scatter(x=results['equity_curve'].index, y=results['equity_curve']['Equity'], name='Strategy Equity', line=dict(color='#00FF66')))
+                        fig_equity.update_layout(template='plotly_dark', height=400, margin=dict(l=10, r=10, t=10, b=10))
+                        st.plotly_chart(fig_equity, use_container_width=True)
+                        
+                        # C. Trade Log
+                        st.write("### 📜 Trade Execution Log")
+                        st.dataframe(results['trade_log'], use_container_width=True)
+                        csv_bt = results['trade_log'].to_csv(index=False).encode('utf-8')
+                        st.download_button("📥 Download Trade Log (CSV)", csv_bt, f"trades_{bt_ticker}.csv", "text/csv")
+                
+                elif run_opt:
+                    # Setup Grid
+                    grid = {
+                        'lookback': list(range(lookback_range[0], lookback_range[1] + 1, 2)),
+                        'bb_mult': list(np.arange(bb_mult_range[0], bb_mult_range[1] + 0.1, 0.25)),
+                        'exit_type': [exit_type],
+                        'exit_value': [exit_val]
+                    }
+                    
+                    with st.spinner(f"Optimizing strategy..."):
+                        opt_results = backtest_engine.optimize_wvf_strategy(df_bt, grid)
+                    
+                    if opt_results is not None and not opt_results.empty:
+                        st.write("### 🏆 Optimization Results (Ranked by Sharpe)")
+                        st.dataframe(opt_results.head(10), use_container_width=True)
+                        
+                        best = opt_results.iloc[0]
+                        st.success(f"✅ Best Parameters: Lookback={best['lookback']}, BB Mult={best['bb_mult']} | Sharpe: {best['Sharpe']}")
+                    else:
+                        st.warning("⚠️ No trades generated with the given parameter grid.")
+            else:
+                st.error("ไม่สามารถโหลดข้อมูลหุ้นสำหรับการทดสอบได้")
+                
+    except Exception as e:
+        st.error(f"เกิดข้อผิดพลาดในระบบ Backtest: {e}")
+
+with main_tabs[9]: # Advanced Tools / More Features
     st.info("🛠️ Advanced Tools & Strategy Builder")
     st.caption("⚙️ **Advanced Features:** รวมเครื่องมือวิเคราะห์เชิงลึก เช่น การปรับจูน Parameter ด้วย AI, ระบบทดสอบย้อนหลัง (Backtest) และห้องทดลองรูปแบบราคา (Pattern Lab)")
     
