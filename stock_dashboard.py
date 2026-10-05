@@ -12,6 +12,9 @@ from dtaidistance import dtw
 import os
 import requests
 import time
+import pickle
+import hashlib
+from pathlib import Path
 import google.generativeai as genai
 import json
 import pytz
@@ -31,6 +34,36 @@ load_dotenv()
 
 # --- Configuration ---
 SET_TZ = pytz.timezone('Asia/Bangkok')
+CACHE_DIR = Path(".cache/stock_data")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# User-Agent list for rotation
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.63 Safari/537.36'
+]
+
+def get_disk_cache(ticker):
+    """Load data from disk if it exists and is not too old (1 hour)."""
+    try:
+        cache_file = CACHE_DIR / f"{ticker.replace('^', '_')}.pkl"
+        if cache_file.exists():
+            if (time.time() - cache_file.stat().st_mtime) < 3600:
+                with open(cache_file, 'rb') as f:
+                    return pickle.load(f)
+    except:
+        pass
+    return None
+
+def save_disk_cache(ticker, df):
+    """Save data to disk."""
+    try:
+        cache_file = CACHE_DIR / f"{ticker.replace('^', '_')}.pkl"
+        with open(cache_file, 'wb') as f:
+            pickle.dump(df, f)
+    except:
+        pass
 st.set_page_config(page_title="Quant Strategy Station", layout="wide")
 
 # --- Utility Functions ---
@@ -1106,7 +1139,8 @@ def get_ai_optimization(ticker, stats, trade_log, current_params, api_key):
 def get_market_regime():
     """Fetch SET Index and determine if we are in a Bull or Bear market."""
     try:
-        set_idx = get_stock_data("^SET.BK")
+        # Use silent=True to avoid cluttering UI with index fetch errors
+        set_idx = get_stock_data("^SET.BK", silent=True)
         if set_idx is not None:
             set_idx['EMA200'] = set_idx['Close'].ewm(span=200, adjust=False).mean()
             curr_price = set_idx['Close'].iloc[-1]
@@ -1119,15 +1153,14 @@ def get_market_regime():
 # --- 1. Data & Indicators ---
 @st.cache_data(ttl=3600)
 def get_stock_info(ticker):
-    """Fetch sector and industry info with fallback and browser-like headers."""
-    # 0. Try loaded config first
+    """Fetch sector and industry info with robust browser-like headers."""
+    if not ticker: return 'N/A'
     if ticker in SET100_SECTORS:
         return SET100_SECTORS[ticker]
         
-    # 1. Try YahooQuery with Session Headers
     try:
         session = requests.Session()
-        session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'})
+        session.headers.update({'User-Agent': USER_AGENTS[0]})
         t = yq.Ticker(ticker, session=session)
         profile = t.summary_profile
         if isinstance(profile, dict):
@@ -1137,8 +1170,7 @@ def get_stock_info(ticker):
                 if s and s != 'N/A': return s
     except:
         pass
-    
-    # 2. Try yfinance info as last resort
+        
     try:
         info = yf.Ticker(ticker).info
         if info and 'sector' in info:
@@ -1149,9 +1181,9 @@ def get_stock_info(ticker):
     return 'N/A'
 
 @st.cache_data(ttl=600)
-def get_stock_data(ticker):
+def get_stock_data(ticker, silent=False):
     """
-    Fetch historical stock data with robust retries, caching, and fallback.
+    Fetch historical stock data with Multi-Tier Caching (Memory + Disk).
     """
     if not ticker:
         return None
@@ -1159,17 +1191,21 @@ def get_stock_data(ticker):
     clean_ticker = ticker.strip().upper()
     if not clean_ticker.endswith('.BK') and not clean_ticker.startswith('^'):
         clean_ticker = f"{clean_ticker}.BK"
-        
+    
+    # Tier 2: Disk Cache
+    cached_df = get_disk_cache(clean_ticker)
+    if cached_df is not None:
+        return cached_df
+
     max_retries = 3
     retry_delay = 1
     
-    # Custom Headers to avoid blocks
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-    
     for attempt in range(max_retries):
         try:
+            # Randomize User-Agent
+            ua = USER_AGENTS[attempt % len(USER_AGENTS)]
+            headers = {'User-Agent': ua}
+            
             # 1. Try YahooQuery
             session = requests.Session()
             session.headers.update(headers)
@@ -1193,25 +1229,23 @@ def get_stock_data(ticker):
                         df = df.set_index("date")
                         df = df[available_cols].rename(columns=col_map)
                         
-                        # Data Cleaning & Validation
                         df = df.sort_index()
                         df = df[~df.index.duplicated(keep='last')]
-                        df = df.ffill().bfill() # Handle missing values
+                        df = df.ffill().bfill()
                         
-                        # Timezone handling
                         if df.index.tz is not None:
                             df.index = df.index.tz_convert(SET_TZ).tz_localize(None)
                         else:
                             df.index = df.index.tz_localize(None)
                         
-                        # Final check for required columns
                         needed = ["Open", "High", "Low", "Close", "Volume"]
                         if all(c in df.columns for c in needed):
+                            save_disk_cache(clean_ticker, df)
                             return df
             
-            # 2. Fallback to yfinance if YahooQuery fails or is empty
+            # 2. Fallback to yfinance
             yf_ticker = yf.Ticker(clean_ticker)
-            df_yf = yf_ticker.history(period="2y") # Start with shorter period for reliability
+            df_yf = yf_ticker.history(period="2y")
             
             if df_yf is None or df_yf.empty:
                 df_yf = yf_ticker.history(period="max")
@@ -1221,7 +1255,7 @@ def get_stock_data(ticker):
                 df_yf = df_yf[[c for c in needed if c in df_yf.columns]].copy()
                 df_yf = df_yf.sort_index()
                 df_yf = df_yf[~df_yf.index.duplicated(keep='last')]
-                df_yf = df_yf.ffill().bfill() # Handle missing values
+                df_yf = df_yf.ffill().bfill()
                 
                 if df_yf.index.tz is not None:
                     df_yf.index = df_yf.index.tz_convert(SET_TZ).tz_localize(None)
@@ -1229,19 +1263,72 @@ def get_stock_data(ticker):
                     df_yf.index = df_yf.index.tz_localize(None)
                     
                 if all(c in df_yf.columns for c in needed):
+                    save_disk_cache(clean_ticker, df_yf)
                     return df_yf
             
-            # If still empty, raise error to trigger retry
-            raise ValueError(f"Empty data for {clean_ticker}")
+            raise ValueError(f"Empty data")
             
         except Exception as e:
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
-                retry_delay *= 2 # Exponential backoff
-            else:
-                st.warning(f"⚠️ Attempt {attempt+1} failed for {clean_ticker}: {str(e)}")
+                retry_delay *= 2
+            elif not silent:
+                if "^SET.BK" in clean_ticker or "SET.BK" in clean_ticker:
+                    pass
+                else:
+                    # Suppress UI alert clutter
+                    print(f"Failed to fetch {clean_ticker}: {e}")
                 
     return None
+
+def batch_get_stock_data(tickers):
+    """
+    Download multiple tickers in one go using yf.download to reduce API hits.
+    Saves to disk cache for future use.
+    """
+    clean_tickers = []
+    for t in tickers:
+        ct = t.strip().upper()
+        if not ct.endswith('.BK') and not ct.startswith('^'):
+            ct = f"{ct}.BK"
+        clean_tickers.append(ct)
+    
+    # Filter out tickers already in disk cache
+    missing_tickers = [t for t in clean_tickers if get_disk_cache(t) is None]
+    
+    if missing_tickers:
+        try:
+            # Download missing tickers in one batch
+            # Note: yf.download returns a MultiIndex if multiple tickers are passed
+            data = yf.download(missing_tickers, period="2y", group_by='ticker', threads=True, progress=False)
+            
+            for t in missing_tickers:
+                try:
+                    if len(missing_tickers) == 1:
+                        df = data
+                    else:
+                        df = data[t]
+                    
+                    if df is not None and not df.empty:
+                        needed = ["Open", "High", "Low", "Close", "Volume"]
+                        df = df[[c for c in needed if c in df.columns]].copy()
+                        df = df.sort_index()
+                        df = df[~df.index.duplicated(keep='last')]
+                        df = df.ffill().bfill()
+                        
+                        if df.index.tz is not None:
+                            df.index = df.index.tz_convert(SET_TZ).tz_localize(None)
+                        else:
+                            df.index = df.index.tz_localize(None)
+                            
+                        save_disk_cache(t, df)
+                except:
+                    continue
+        except Exception as e:
+            print(f"Batch download failed: {e}")
+    
+    # Return all requested data (from memory/disk)
+    return {t: get_stock_data(t, silent=True) for t in clean_tickers}
 
 
 def generate_ai_trading_plan(ticker, row, api_key, ai_insights=None):
@@ -1593,14 +1680,21 @@ def run_set100_batch_scan(tickers, target_date=None):
         delattr(save_scan_result, "_logged_sample")
     
     # Pre-fetch all sectors in bulk
-    status_text.text("🔄 Initializing Sector Information...")
+    status_text.text("🔄 Initializing Sector & Price Data...")
     try:
         session = requests.Session()
-        session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'})
+        session.headers.update({'User-Agent': USER_AGENTS[0]})
         bulk_t = yq.Ticker(tickers, session=session)
         all_profiles = bulk_t.summary_profile
     except:
         all_profiles = {}
+    
+    # NEW: Batch Download Price Data for all tickers to reduce API hits
+    try:
+        all_data = batch_get_stock_data(tickers)
+    except Exception as e:
+        print(f"Batch data fetch failed: {e}")
+        all_data = {}
     
     # Get performance stats once for scoring
     perf_stats = get_signal_performance_stats(supabase)
@@ -1611,7 +1705,18 @@ def run_set100_batch_scan(tickers, target_date=None):
     for i, ticker in enumerate(tickers):
         try:
             status_text.text(f"Scanning {ticker} ({i+1}/{len(tickers)})...")
-            df_full = get_stock_data(ticker)
+            
+            # Use pre-fetched data if available
+            clean_t = ticker.strip().upper()
+            if not clean_t.endswith('.BK') and not clean_t.startswith('^'):
+                clean_t = f"{clean_t}.BK"
+            
+            df_full = all_data.get(clean_t)
+            
+            if df_full is None:
+                # Fallback to individual fetch if batch missed it
+                df_full = get_stock_data(ticker, silent=True)
+            
             if df_full is not None and len(df_full) > 100:
                 # If target_date is provided, slice data to that date
                 if target_date:
