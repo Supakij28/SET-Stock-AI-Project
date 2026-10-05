@@ -3409,7 +3409,7 @@ with main_tabs[7]: # Market Bottom (WVF)
                             yanchor="bottom",
                             y=1.12,          # Move above chart area
                             xanchor="right",
-                            x=0.99           # Align to the right
+                            x=0.98           # Align to the right per directive
                         ),
                         hovermode="x", # Spike line capture enabled, but Hover Box suppressed by trace settings
                         dragmode='pan'

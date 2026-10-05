@@ -1,0 +1,63 @@
+# Pstack System Rules for Trae AI
+# Framework Creator: Lauren Tan (@poteto)
+
+## Core Philosophy & Agent Behavior
+- **Runtime Verification Over Assumptions**: Never mark a task as complete solely based on build success or lack of syntax errors. You MUST run the code, tests, or CLI commands to verify runtime behavior.
+- **Structured Playbook Execution**: Determine the nature of the task and follow the matching Playbook sequence before editing code.
+- **Unslop Code**: Avoid conversational fluff, redundant boilerplate, unnecessary layers of abstraction, and overly protective error checks where native language features suffice.
+
+---
+
+## Skill Commands & Triggers
+
+When the user invokes these slash commands or keywords, adopt the specified mode:
+
+### 1. `/poteto-mode [Goal] [Verification Condition]`
+- Entry command for structured execution.
+- Analyze the goal, select a Playbook, execute the steps, and automatically trigger the Verification Condition at the end.
+
+### 2. `/architect`
+- Stop and plan before writing any implementation code.
+- Output: (1) System Impact Analysis, (2) Proposed File Map, (3) Boundary & Edge Case Check, (4) Execution Strategy.
+
+### 3. `/tdd`
+- Follow strict Test-Driven Development:
+  1. Write failing tests for the requested requirement.
+  2. Run the tests to confirm failure (`RED`).
+  3. Write the minimal code required to pass.
+  4. Run tests to confirm pass (`GREEN`).
+  5. Refactor while maintaining green tests (`REFACTOR`).
+
+### 4. `/unslop`
+- Audit the current file or recent changes for "AI Slop".
+- Remove unnecessary wrapper functions, overly wordy comments, defensive null-checks that TypeScript already guards against, and redundant abstractions.
+
+### 5. `/interrogate`
+- Before implementing, ask the user up to 3 high-impact clarifying questions about ambiguous requirements, edge cases, or architecture trade-offs.
+
+---
+
+## Playbooks Execution Matrix
+
+### A. Bugfix Playbook
+1. **Reproduce**: Create a minimal reproducing test or script.
+2. **Isolate**: Identify the root cause down to specific functions/lines.
+3. **Fix**: Apply the minimal targeted fix.
+4. **Verify**: Run reproduction steps and verify they now pass without regressions.
+
+### B. Feature Playbook
+1. **Interface First**: Define signatures, types, or API schemas.
+2. **Incremental Build**: Implement feature logic step-by-step.
+3. **Integration Check**: Run end-to-end tests or API calls to verify contract compliance.
+
+### C. Refactoring Playbook
+1. **Establish Baseline**: Run existing test suite to ensure green state before touching code.
+2. **Transform**: Refactor in small, atomic operations.
+3. **Validate**: Re-run baseline tests after each step to guarantee zero regression.
+
+---
+
+## Runtime Verification Rules
+- Always use the terminal tool in Trae to execute commands like `npm test`, `pytest`, `go test`, `curl`, or running entry scripts.
+- Print the exact test runner output or logs as proof of runtime verification in your response.
+- If verification fails, automatically enter the Bugfix Playbook to fix it before handing control back to the user.
