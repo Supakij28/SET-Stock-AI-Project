@@ -3525,22 +3525,38 @@ with main_tabs[8]: # WVF Strategy Backtest & Optimizer
                 st.markdown("### 🌋 WVF Parameters")
                 lookback_range = st.slider("Lookback Period Range", 10, 60, (20, 30), 2)
                 bb_mult_range = st.slider("BB StdDev Range", 1.0, 3.0, (1.5, 2.5), 0.25)
+                st.divider()
+                st.markdown("### 🔍 Entry Filters")
+                use_trend_filter = st.checkbox("Enable Trend Filter (Price > EMA)", value=True)
+                ema_trend_val = st.number_input("EMA Period", 20, 250, 200)
                 
             with col_bt3:
                 st.markdown("### 🚪 Exit Strategy")
-                exit_choice = st.selectbox("Exit Rule", ["Fixed Holding Days", "Profit Target / Stop Loss", "RSI Overbought"])
+                exit_choice = st.selectbox("Exit Rule", [
+                    "StopLoss_TakeProfit", 
+                    "RSI_Overbought", 
+                    "Trailing_Stop",
+                    "Fixed Holding Days",
+                    "Indicator Exit (RSI/BB)"
+                ])
                 
                 if exit_choice == "Fixed Holding Days":
                     exit_val = st.slider("Days to Hold", 1, 30, 10)
                     exit_type = 'days'
-                elif exit_choice == "Profit Target / Stop Loss":
+                elif exit_choice == "StopLoss_TakeProfit":
                     tp = st.slider("Take Profit (%)", 1.0, 30.0, 10.0) / 100
                     sl = st.slider("Stop Loss (%)", 1.0, 20.0, 5.0) / 100
-                    exit_val = (tp, sl)
-                    exit_type = 'profit_stop'
+                    exit_type = 'StopLoss_TakeProfit'
+                    exit_val = (tp, sl) # For backward compat in code if needed
+                elif exit_choice == "RSI_Overbought":
+                    exit_val = st.slider("RSI Exit Level", 50, 90, 65)
+                    exit_type = 'RSI_Overbought'
+                elif exit_choice == "Trailing_Stop":
+                    exit_val = st.slider("ATR Multiplier", 1.0, 5.0, 2.0, 0.5)
+                    exit_type = 'Trailing_Stop'
                 else:
-                    exit_val = st.slider("RSI Level", 50, 90, 70)
-                    exit_type = 'rsi'
+                    exit_val = 0
+                    exit_type = 'indicator_exit'
 
             st.divider()
             col_btn1, col_btn2 = st.columns(2)
@@ -3558,9 +3574,20 @@ with main_tabs[8]: # WVF Strategy Backtest & Optimizer
                         'slippage': slip_rate,
                         'lookback': lookback_range[0] if isinstance(lookback_range, tuple) else lookback_range,
                         'bb_mult': bb_mult_range[0] if isinstance(bb_mult_range, tuple) else bb_mult_range,
+                        'use_trend_filter': use_trend_filter,
+                        'ema_trend_period': ema_trend_val,
                         'exit_type': exit_type,
-                        'exit_value': exit_val
+                        'exit_value': exit_val if exit_type in ['days', 'RSI_Overbought', 'Trailing_Stop'] else 0
                     }
+                    
+                    # Add specific params for the new exit logic
+                    if exit_type == 'StopLoss_TakeProfit':
+                        params['take_profit'] = tp
+                        params['stop_loss'] = sl
+                    elif exit_type == 'RSI_Overbought':
+                        params['rsi_exit'] = exit_val
+                    elif exit_type == 'Trailing_Stop':
+                        params['atr_mult'] = exit_val
                     
                     with st.spinner("Running backtest..."):
                         results = backtest_engine.run_wvf_backtest(df_bt, params)
@@ -3590,13 +3617,24 @@ with main_tabs[8]: # WVF Strategy Backtest & Optimizer
                         st.download_button("📥 Download Trade Log (CSV)", csv_bt, f"trades_{bt_ticker}.csv", "text/csv")
                 
                 elif run_opt:
-                    # Setup Grid
+                    # Setup Grid based on user choices
                     grid = {
                         'lookback': list(range(lookback_range[0], lookback_range[1] + 1, 2)),
                         'bb_mult': list(np.arange(bb_mult_range[0], bb_mult_range[1] + 0.1, 0.25)),
-                        'exit_type': [exit_type],
-                        'exit_value': [exit_val]
+                        'use_trend_filter': [use_trend_filter],
+                        'ema_trend_period': [ema_trend_val],
+                        'exit_type': [exit_type]
                     }
+                    
+                    if exit_type == 'StopLoss_TakeProfit':
+                        grid['stop_loss'] = [0.03, 0.05, 0.07]
+                        grid['take_profit'] = [0.08, 0.12, 0.15]
+                    elif exit_type == 'RSI_Overbought':
+                        grid['rsi_exit'] = [60, 65, 70]
+                    elif exit_type == 'Trailing_Stop':
+                        grid['atr_mult'] = [1.5, 2.0, 2.5, 3.0]
+                    else:
+                        grid['exit_value'] = [exit_val]
                     
                     with st.spinner(f"Optimizing strategy..."):
                         opt_results = backtest_engine.optimize_wvf_strategy(df_bt, grid)
@@ -3606,7 +3644,7 @@ with main_tabs[8]: # WVF Strategy Backtest & Optimizer
                         st.dataframe(opt_results.head(10), use_container_width=True)
                         
                         best = opt_results.iloc[0]
-                        st.success(f"✅ Best Parameters: Lookback={best['lookback']}, BB Mult={best['bb_mult']} | Sharpe: {best['Sharpe']}")
+                        st.success(f"✅ Best Parameters: Sharpe={best['Sharpe']} | Profit: {best['Net Profit (%)']}% | Trades: {best['Trades']}")
                     else:
                         st.warning("⚠️ No trades generated with the given parameter grid.")
             else:
