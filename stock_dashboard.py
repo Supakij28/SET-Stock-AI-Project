@@ -11,6 +11,7 @@ from sklearn.ensemble import RandomForestClassifier
 from dtaidistance import dtw
 import os
 import requests
+import time
 import google.generativeai as genai
 import json
 import pytz
@@ -1147,99 +1148,100 @@ def get_stock_info(ticker):
 
     return 'N/A'
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=600)
 def get_stock_data(ticker):
     """
-    Fetch historical stock data with robust isolation and fallback.
-    Ensures the data returned is strictly for the requested ticker and has a clean Date index.
+    Fetch historical stock data with robust retries, caching, and fallback.
     """
     if not ticker:
         return None
         
-    # Clean ticker: Strip spaces, ensure .BK suffix for Thai stocks if missing
     clean_ticker = ticker.strip().upper()
     if not clean_ticker.endswith('.BK') and not clean_ticker.startswith('^'):
         clean_ticker = f"{clean_ticker}.BK"
         
-    try:
-        # 1. Try YahooQuery with strict symbol filtering
-        session = requests.Session()
-        session.headers.update({'User-Agent': 'Mozilla/5.0'})
-        t = yq.Ticker(clean_ticker, session=session)
-        df = t.history(start="2018-01-01")
-        
-        if df is not None and not df.empty:
-            # Handle YahooQuery's MultiIndex or SingleIndex return
-            if isinstance(df.index, pd.MultiIndex):
-                df = df.reset_index()
-            else:
-                df = df.reset_index()
-                
-            # STRICT FILTERING: Ensure we only have the requested ticker's data
-            # YahooQuery sometimes returns other symbols if passed a list or via internal mapping
-            if "symbol" in df.columns:
-                df = df[df["symbol"] == clean_ticker].copy()
+    max_retries = 3
+    retry_delay = 1
+    
+    # Custom Headers to avoid blocks
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+    
+    for attempt in range(max_retries):
+        try:
+            # 1. Try YahooQuery
+            session = requests.Session()
+            session.headers.update(headers)
+            t = yq.Ticker(clean_ticker, session=session)
+            df = t.history(start="2018-01-01")
             
-            if not df.empty:
-                # Standardize columns and index
-                # YahooQuery uses lowercase column names: [date, symbol, close, volume, open, high, low, ...]
-                col_map = {
-                    "close": "Close", 
-                    "volume": "Volume", 
-                    "open": "Open", 
-                    "high": "High", 
-                    "low": "Low"
-                }
+            if df is not None and not df.empty:
+                if isinstance(df.index, pd.MultiIndex):
+                    df = df.reset_index()
+                else:
+                    df = df.reset_index()
+                    
+                if "symbol" in df.columns:
+                    df = df[df["symbol"] == clean_ticker].copy()
                 
-                # Verify required columns exist
-                available_cols = [c for c in col_map.keys() if c in df.columns]
-                if "date" in df.columns and len(available_cols) >= 3:
-                    df['date'] = pd.to_datetime(df['date'])
-                    df = df.set_index("date")
-                    df = df[available_cols].rename(columns=col_map)
-                    
-                    # Sort and drop duplicates in index
-                    df = df.sort_index()
-                    df = df[~df.index.duplicated(keep='last')]
-                    
-                    # Ensure index is Naive Bangkok Time
-                    if df.index.tz is not None:
-                        df.index = df.index.tz_convert(SET_TZ).tz_localize(None)
-                    else:
-                        df.index = df.index.tz_localize(None)
+                if not df.empty:
+                    col_map = {"close": "Close", "volume": "Volume", "open": "Open", "high": "High", "low": "Low"}
+                    available_cols = [c for c in col_map.keys() if c in df.columns]
+                    if "date" in df.columns and len(available_cols) >= 3:
+                        df['date'] = pd.to_datetime(df['date'])
+                        df = df.set_index("date")
+                        df = df[available_cols].rename(columns=col_map)
                         
-                    return df
-
-        # 2. Fallback to yfinance if YahooQuery fails or returns invalid data
-        print(f"⚠️ YahooQuery fallback for {clean_ticker}...")
-        yf_ticker = yf.Ticker(clean_ticker)
-        # Fetch longer period to ensure we have enough data for indicators
-        df_yf = yf_ticker.history(period="max") 
-        
-        if df_yf is not None and not df_yf.empty:
-            # Ensure standard OHLCV column names and drop extra columns like Dividends
-            needed = ["Open", "High", "Low", "Close", "Volume"]
-            df_yf = df_yf[[c for c in needed if c in df_yf.columns]].copy()
+                        # Data Cleaning & Validation
+                        df = df.sort_index()
+                        df = df[~df.index.duplicated(keep='last')]
+                        df = df.ffill().bfill() # Handle missing values
+                        
+                        # Timezone handling
+                        if df.index.tz is not None:
+                            df.index = df.index.tz_convert(SET_TZ).tz_localize(None)
+                        else:
+                            df.index = df.index.tz_localize(None)
+                        
+                        # Final check for required columns
+                        needed = ["Open", "High", "Low", "Close", "Volume"]
+                        if all(c in df.columns for c in needed):
+                            return df
             
-            # Sort and deduplicate
-            df_yf = df_yf.sort_index()
-            df_yf = df_yf[~df_yf.index.duplicated(keep='last')]
+            # 2. Fallback to yfinance if YahooQuery fails or is empty
+            yf_ticker = yf.Ticker(clean_ticker)
+            df_yf = yf_ticker.history(period="2y") # Start with shorter period for reliability
             
-            # Ensure index is naive datetime
-            if df_yf.index.tz is not None:
-                df_yf.index = df_yf.index.tz_convert(SET_TZ).tz_localize(None)
-            else:
-                df_yf.index = df_yf.index.tz_localize(None)
+            if df_yf is None or df_yf.empty:
+                df_yf = yf_ticker.history(period="max")
                 
-            return df_yf
+            if df_yf is not None and not df_yf.empty:
+                needed = ["Open", "High", "Low", "Close", "Volume"]
+                df_yf = df_yf[[c for c in needed if c in df_yf.columns]].copy()
+                df_yf = df_yf.sort_index()
+                df_yf = df_yf[~df_yf.index.duplicated(keep='last')]
+                df_yf = df_yf.ffill().bfill() # Handle missing values
+                
+                if df_yf.index.tz is not None:
+                    df_yf.index = df_yf.index.tz_convert(SET_TZ).tz_localize(None)
+                else:
+                    df_yf.index = df_yf.index.tz_localize(None)
+                    
+                if all(c in df_yf.columns for c in needed):
+                    return df_yf
             
-        return None
-    except Exception as e:
-        print(f"Critical Error fetching {clean_ticker}: {e}")
-        return None
-    except Exception as e:
-        print(f"❌ Critical error fetching data for {ticker}: {e}")
-        return None
+            # If still empty, raise error to trigger retry
+            raise ValueError(f"Empty data for {clean_ticker}")
+            
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay *= 2 # Exponential backoff
+            else:
+                st.warning(f"⚠️ Attempt {attempt+1} failed for {clean_ticker}: {str(e)}")
+                
+    return None
 
 
 def generate_ai_trading_plan(ticker, row, api_key, ai_insights=None):
@@ -3648,7 +3650,10 @@ with main_tabs[8]: # WVF Strategy Backtest & Optimizer
                     else:
                         st.warning("⚠️ No trades generated with the given parameter grid.")
             else:
-                st.error("ไม่สามารถโหลดข้อมูลหุ้นสำหรับการทดสอบได้")
+                st.error("ไม่สามารถโหลดข้อมูลหุ้นสำหรับการทดสอบได้ (Yahoo Finance Limit or Connection Issue)")
+                if st.button("🔄 Try Fetching Again"):
+                    st.cache_data.clear()
+                    st.rerun()
                 
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในระบบ Backtest: {e}")
