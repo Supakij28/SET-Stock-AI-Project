@@ -2278,15 +2278,16 @@ if main_category == "🎯 Trading & Daily Operations":
                             resp = supabase.table("trading_log").select("*").or_("status.eq.Pending,status.eq.OPEN").execute()
                             if resp.data:
                                 df_active = pd.DataFrame(resp.data)
-                                # Map Supabase columns: ticker -> ticker, last_price/entry_price -> entry_price, timestamp -> entry_date
-                                # For Paper trades, we use entry_price. For system signals, we use last_price.
-                                df_active['entry_price_final'] = df_active.apply(
-                                    lambda row: row['entry_price'] if pd.notnull(row.get('entry_price')) else row['last_price'], 
-                                    axis=1
-                                )
-                                st.session_state['active_positions'] = df_active[['ticker', 'entry_price_final', 'timestamp']].rename(columns={
+                                # Map Supabase columns: ticker -> ticker, entry_price -> entry_price, timestamp -> entry_date
+                                # System signals use 'last_price' as entry estimate, Paper trades use 'entry_price'
+                                if 'entry_price' in df_active.columns:
+                                    df_active['entry_price'] = df_active['entry_price'].fillna(df_active['last_price'])
+                                else:
+                                    df_active['entry_price'] = df_active['last_price']
+                                    
+                                st.session_state['active_positions'] = df_active[['ticker', 'entry_price', 'timestamp']].rename(columns={
                                     'ticker': 'ticker',
-                                    'entry_price_final': 'entry_price',
+                                    'entry_price': 'entry_price',
                                     'timestamp': 'entry_date'
                                 })
                             else:
