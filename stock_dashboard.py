@@ -2713,8 +2713,9 @@ elif main_category == "🌋 Market Insights & Analytics":
                 sa_df['Relative Vol'] = sa_df['Relative Vol'].apply(lambda x: round(safe_float(x), 2))
                 sa_df['Conviction_Score'] = sa_df['Conviction_Score'].apply(lambda x: round(safe_float(x), 2))
                 
-                # Sort by Conviction Score (Desc) and Relative Vol (Asc)
-                sa_df = sa_df.sort_values(by=['Conviction_Score', 'Relative Vol'], ascending=[False, True])
+                # Sort by Signal Date (Newest First) and Accumulation Score (Highest First)
+                sa_df['Sort_Date'] = pd.to_datetime(sa_df['Last Update'], errors='coerce')
+                sa_df = sa_df.sort_values(by=['Sort_Date', 'Conviction_Score'], ascending=[False, False])
                 
                 # Display metrics
                 st.write(f"🔥 พบหุ้นเข้าเงื่อนไข Silent Accumulation ({sa_lookback_mode}) ทั้งหมด **{len(sa_df)}** ตัว")
