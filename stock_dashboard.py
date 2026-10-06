@@ -21,6 +21,7 @@ import pytz
 import textwrap
 import backtest_engine
 import signal_engine
+import paper_trading
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from scanner_engine import (
@@ -2273,14 +2274,19 @@ if main_category == "🎯 Trading & Daily Operations":
                 if 'active_positions' not in st.session_state or st.session_state.get('active_positions') is None:
                     if supabase:
                         try:
-                            # Fetch positions with 'Pending' status from trading_log
-                            resp = supabase.table("trading_log").select("*").eq("status", "Pending").execute()
+                            # Fetch positions with 'Pending' (System) or 'OPEN' (Paper) status from trading_log
+                            resp = supabase.table("trading_log").select("*").or_("status.eq.Pending,status.eq.OPEN").execute()
                             if resp.data:
                                 df_active = pd.DataFrame(resp.data)
-                                # Map Supabase columns: ticker -> ticker, last_price -> entry_price, timestamp -> entry_date
-                                st.session_state['active_positions'] = df_active[['ticker', 'last_price', 'timestamp']].rename(columns={
+                                # Map Supabase columns: ticker -> ticker, last_price/entry_price -> entry_price, timestamp -> entry_date
+                                # For Paper trades, we use entry_price. For system signals, we use last_price.
+                                df_active['entry_price_final'] = df_active.apply(
+                                    lambda row: row['entry_price'] if pd.notnull(row.get('entry_price')) else row['last_price'], 
+                                    axis=1
+                                )
+                                st.session_state['active_positions'] = df_active[['ticker', 'entry_price_final', 'timestamp']].rename(columns={
                                     'ticker': 'ticker',
-                                    'last_price': 'entry_price',
+                                    'entry_price_final': 'entry_price',
                                     'timestamp': 'entry_date'
                                 })
                             else:
@@ -2303,6 +2309,17 @@ if main_category == "🎯 Trading & Daily Operations":
                 tp_sl_reached = len(exit_control_df[exit_control_df['Action Required'].str.contains('SELL', na=False)])
             col_sc3.metric("TP / SL Reached Today", tp_sl_reached)
             
+            # --- Paper Trading Portfolio Metrics ---
+            st.divider()
+            st.markdown("### 💼 Paper Trading Portfolio Summary")
+            portfolio_metrics = paper_trading.get_paper_portfolio_metrics(supabase)
+            if portfolio_metrics:
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Total Portfolio Value", f"{portfolio_metrics['total_portfolio_value']:,.2f} THB")
+                m2.metric("Win Rate %", f"{portfolio_metrics['win_rate']}%")
+                m3.metric("Realized PnL", f"{portfolio_metrics['realized_pnl']:,.2f} THB", delta=portfolio_metrics['realized_pnl'])
+                m4.metric("Un-realized PnL", f"{portfolio_metrics['unrealized_pnl']:,.2f} THB", delta=portfolio_metrics['unrealized_pnl'])
+            
             st.divider()
             
             # 2. Daily Action Plan Tables
@@ -2310,8 +2327,32 @@ if main_category == "🎯 Trading & Daily Operations":
             st.caption("ออเดอร์ที่เตรียมเข้าซื้อที่ราคาเปิดในวันทำการถัดไป (Zero Look-Ahead Bias)")
             
             if not entry_orders_df.empty:
-                st.dataframe(entry_orders_df, use_container_width=True, hide_index=True)
+                # Add columns for Paper Trading selection
+                display_entry_df = entry_orders_df.copy()
                 
+                # Show the signals table
+                st.dataframe(display_entry_df, use_container_width=True, hide_index=True)
+                
+                # Paper Trading Execution Form
+                with st.expander("🟢 Execute Paper Buy Orders", expanded=False):
+                    buy_col1, buy_col2, buy_col3 = st.columns([2, 2, 1])
+                    selected_ticker = buy_col1.selectbox("Select Ticker to Buy", options=display_entry_df['Ticker'].tolist())
+                    
+                    # Get signal type for the selected ticker
+                    sig_type = display_entry_df[display_entry_df['Ticker'] == selected_ticker]['Signal Type'].values[0]
+                    entry_px = display_entry_df[display_entry_df['Ticker'] == selected_ticker]['Calculated Entry Price (Open)'].values[0]
+                    
+                    quantity = buy_col2.number_input(f"Quantity for {selected_ticker}", min_value=100, value=1000, step=100)
+                    
+                    if buy_col3.button("🟢 Execute Buy", use_container_width=True):
+                        success, msg = paper_trading.execute_paper_buy(supabase, selected_ticker, entry_px, quantity, sig_type)
+                        if success:
+                            st.success(msg)
+                            st.session_state['active_positions'] = None # Reset to force refresh
+                            st.rerun()
+                        else:
+                            st.error(msg)
+
                 csv_orders = entry_orders_df.to_csv(index=False).encode('utf-8-sig')
                 st.download_button(
                     "📥 Download Tomorrow_Orders.csv",
@@ -2337,6 +2378,38 @@ if main_category == "🎯 Trading & Daily Operations":
                 
                 st.dataframe(exit_control_df.style.apply(style_exit_table, axis=1), use_container_width=True, hide_index=True)
                 
+                # Paper Trading Exit Form
+                with st.expander("🔴 Execute Paper Sell / Close Positions", expanded=False):
+                    # We need the Supabase IDs to close positions
+                    if supabase:
+                        resp = supabase.table("trading_log").select("id, ticker, entry_price, status").eq("status", "OPEN").execute()
+                        if resp.data:
+                            open_pos_df = pd.DataFrame(resp.data)
+                            sell_col1, sell_col2, sell_col3 = st.columns([2, 2, 1])
+                            
+                            pos_to_sell = sell_col1.selectbox(
+                                "Select Position to Close", 
+                                options=open_pos_df['id'].tolist(),
+                                format_func=lambda x: f"{open_pos_df[open_pos_df['id']==x]['ticker'].values[0]} (Entry: {open_pos_df[open_pos_df['id']==x]['entry_price'].values[0]})"
+                            )
+                            
+                            # Get current price for the selected ticker if possible
+                            ticker_to_sell = open_pos_df[open_pos_df['id'] == pos_to_sell]['ticker'].values[0]
+                            current_px = all_data[ticker_to_sell]['Close'].iloc[-1] if ticker_to_sell in all_data else 0.0
+                            
+                            exit_px = sell_col2.number_input(f"Exit Price for {ticker_to_sell}", value=float(current_px))
+                            
+                            if sell_col3.button("🔴 Execute Sell", use_container_width=True):
+                                success, msg = paper_trading.execute_paper_sell(supabase, pos_to_sell, exit_px)
+                                if success:
+                                    st.success(msg)
+                                    st.session_state['active_positions'] = None # Reset to force refresh
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+                        else:
+                            st.info("No open paper positions to close.")
+
                 csv_exits = exit_control_df.to_csv(index=False).encode('utf-8-sig')
                 st.download_button(
                     "📥 Download Exit_Orders.csv",
