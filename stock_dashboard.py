@@ -2308,6 +2308,13 @@ if main_category == "🎯 Trading & Daily Operations":
     with sub_tabs[0]: # 🎯 Signal Command Center
         try:
             st.title("🎯 Trading Signal Command Center")
+            st.markdown("""
+                <style>
+                .stDataFrame td {
+                    font-size: 15px !important;
+                }
+                </style>
+            """, unsafe_allow_html=True)
             st.info("📅 **Daily Action Plan:** แผนการเทรดรายวันสำหรับพรุ่งนี้ (T+1 Open) อ้างอิงจาก Optimized Parameters ล่าสุด")
             
             # 1. Executive Summary Cards
@@ -2380,8 +2387,15 @@ if main_category == "🎯 Trading & Daily Operations":
                 # Add columns for Paper Trading selection
                 display_entry_df = entry_orders_df.copy()
                 
-                # Show the signals table
-                st.dataframe(display_entry_df, use_container_width=True, hide_index=True)
+                # Show the signals table with institutional formatting
+                formatted_entry_df = display_entry_df.style.format({
+                    'Calculated Entry Price (Open)': '{:,.2f}',
+                    'Dynamic Stop Loss': '{:,.2f}',
+                    'Dynamic Take Profit': '{:,.2f}',
+                    'R:R Ratio': '{:,.2f}'
+                }).set_properties(**{'font-weight': 'bold', 'font-size': '15px'})
+                
+                st.dataframe(formatted_entry_df, use_container_width=True, hide_index=True)
                 
                 # Paper Trading Execution Form
                 with st.expander("🟢 Execute Paper Buy Orders", expanded=False):
@@ -2421,12 +2435,23 @@ if main_category == "🎯 Trading & Daily Operations":
             if not exit_control_df.empty:
                 def style_exit_table(row):
                     action = str(row.get('Action Required', ''))
+                    # Institutional Grade Styling: Bold and Larger Font
+                    base_style = 'font-weight: bold; font-size: 15px;'
                     if 'SELL' in action:
                         color = 'rgba(239, 68, 68, 0.2)' if '(SL)' in action else 'rgba(34, 197, 94, 0.2)'
-                        return [f'background-color: {color}'] * len(row)
-                    return [''] * len(row)
+                        return [f'background-color: {color}; {base_style}'] * len(row)
+                    return [base_style] * len(row)
                 
-                st.dataframe(exit_control_df.style.apply(style_exit_table, axis=1), use_container_width=True, hide_index=True)
+                # Format numbers and apply institutional styles
+                formatted_exit_df = exit_control_df.style.apply(style_exit_table, axis=1).format({
+                    'Entry Price': '{:,.2f}',
+                    'Current Price': '{:,.2f}',
+                    'Target TP': '{:,.2f}',
+                    'Target SL': '{:,.2f}',
+                    'Current PnL %': '{:+.2f}%'
+                })
+                
+                st.dataframe(formatted_exit_df, use_container_width=True, hide_index=True)
                 
                 # Paper Trading Exit Form
                 with st.expander("🔴 Execute Paper Sell / Close Positions", expanded=False):
