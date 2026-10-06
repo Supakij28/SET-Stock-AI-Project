@@ -20,6 +20,7 @@ import json
 import pytz
 import textwrap
 import backtest_engine
+import signal_engine
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from scanner_engine import (
@@ -100,6 +101,56 @@ def get_supabase_client() -> Client:
         return None
         
     return create_client(url, key)
+
+def load_best_params():
+    """Load optimized parameters from Supabase or local fallback."""
+    params_dict = {}
+    
+    # 1. Try Supabase
+    if supabase:
+        try:
+            resp = supabase.table("strategy_params").select("*").execute()
+            if resp.data:
+                for row in resp.data:
+                    params_dict[row['ticker']] = json.loads(row['params_json'])
+                return params_dict
+        except:
+            pass # Table might not exist
+            
+    # 2. Try Local Fallback
+    try:
+        if os.path.exists("best_params.json"):
+            with open("best_params.json", "r") as f:
+                return json.load(f)
+    except:
+        pass
+        
+    return params_dict
+
+def save_best_params(ticker, params):
+    """Save optimized parameters to Supabase and local fallback."""
+    # 1. Save Local
+    try:
+        current_params = load_best_params()
+        current_params[ticker] = params
+        with open("best_params.json", "w") as f:
+            json.dump(current_params, f, indent=4)
+    except Exception as e:
+        st.error(f"Error saving params locally: {e}")
+        
+    # 2. Save Supabase
+    if supabase:
+        try:
+            # Upsert logic
+            payload = {
+                "ticker": ticker,
+                "params_json": json.dumps(params),
+                "updated_at": datetime.now(SET_TZ).isoformat()
+            }
+            supabase.table("strategy_params").upsert(payload, on_conflict="ticker").execute()
+        except Exception as e:
+            # Table might not exist, skip silently
+            pass
 
 # --- Initialization & Authentication Flow ---
 def check_password():
@@ -2183,205 +2234,127 @@ def get_radar_performance_stats(supabase):
     except:
         return {}
 
-# --- MAIN UI TABS ---
-main_tabs = st.tabs([
-    "🎯 Smart Pattern Radar",
-    "🚀 Unified Report", 
-    "💎 Bottom Fishing", 
-    "📊 Market Breadth", 
-    "📜 Admin & History", 
-    "💎 SILENT ACCUM Insight",
-    "📊 Market Scan Results (SET100)",
-    "🌋 Market Bottom (WVF)",
-    "🧪 WVF Backtest & Optimizer",
-    "🛠️ Advanced Tools / More Features"
-])
+# --- 2-Tier Navigation ---
+st.sidebar.header("🕹️ Strategy Navigator")
+main_category = st.sidebar.radio(
+    "Main Category",
+    ["🎯 Trading & Daily Operations", "🌋 Market Insights & Analytics", "🧪 Quant Lab & Administration"],
+    key="main_nav"
+)
 
-with main_tabs[0]: # Smart Pattern Radar
-    try:
-        st.info("🎯 Smart Pattern Radar: ค้นหาหุ้น Pre-Breakout ที่มีความแม่นยำสูง (Conviction >= 70)")
-        
-        # 1. Selection Logic & Filtering
-        regime, _ = get_market_regime()
-        perf_stats = get_radar_performance_stats(supabase)
-        
-        # Fetch latest standardized results
-        df_all = fetch_market_scan_results()
-        
-        # Safe Fallback to Session State if Supabase returns nothing
-        if (df_all is None or df_all.empty) and st.session_state.get('batch_results') is not None:
-            batch_data = st.session_state['batch_results'].get('df', pd.DataFrame())
-            if not batch_data.empty:
-                df_all = batch_data.copy()
-                # Map session state columns to standard internal names
-                col_map = {'Conviction_Score': 'score', 'Signal': 'signal', 'Ticker': 'ticker', 'Last Price': 'close_price', 'Relative Vol': 'relative_vol'}
-                for old_c, new_c in col_map.items():
-                    if old_c in df_all.columns and new_c not in df_all.columns:
-                        df_all[new_c] = df_all[old_c]
-        
-        if df_all is not None and not df_all.empty:
-            # P0: Safe Score Column Access
-            if 'score' not in df_all.columns:
-                df_all['score'] = df_all.get('conviction_score', df_all.get('Conviction_Score', df_all.get('Score', 0)))
-            
-            # Ensure relative_vol exists
-            if 'relative_vol' not in df_all.columns:
-                df_all['relative_vol'] = df_all.get('rel_vol', np.nan)
+# Initialize data if needed for breadth/regime
+if 'batch_results' in st.session_state and st.session_state['batch_results'] is not None:
+    batch_df = st.session_state['batch_results']['df']
+    pos_count = st.session_state['batch_results']['pos']
+    neg_count = st.session_state['batch_results']['neg']
+else:
+    batch_df = pd.DataFrame()
+    pos_count = 0
+    neg_count = 0
 
-            # --- Relaxed Fallback Query Chain ---
+if main_category == "🎯 Trading & Daily Operations":
+    sub_tabs = st.tabs(["🎯 Signal Command Center", "🚀 Unified Scanner & Pattern Radar"])
+    
+    with sub_tabs[0]: # 🎯 Signal Command Center
+        try:
+            st.title("🎯 Trading Signal Command Center")
+            st.info("📅 **Daily Action Plan:** แผนการเทรดรายวันสำหรับพรุ่งนี้ (T+1 Open) อ้างอิงจาก Optimized Parameters ล่าสุด")
             
-            # Tier 1: Conviction Score >= 70
-            df_radar = df_all[
-                (df_all['score'] >= 70) & 
-                ((df_all['relative_vol'] >= 1.2) | (df_all['relative_vol'].isna())) &
-                (df_all['signal'].str.upper().isin(['BUY', 'GOLDEN BUY', 'PRE-FLY', 'SILENT ACCUM', 'BREAKOUT']) if 'signal' in df_all.columns else False)
-            ].copy()
-            radar_status_msg = "High Conviction"
-            
-            # Tier 2: Conviction Score >= 50
-            if df_radar.empty:
-                df_radar = df_all[
-                    (df_all['score'] >= 50) & 
-                    (df_all['signal'].str.upper().isin(['BUY', 'GOLDEN BUY', 'PRE-FLY', 'SILENT ACCUM', 'BREAKOUT']) if 'signal' in df_all.columns else False)
-                ].sort_values('score', ascending=False).head(10).copy()
-                if not df_radar.empty:
-                    radar_status_msg = "Moderate Conviction"
-                    st.info("💡 Fallback Mode: แสดงหุ้น Top 10 ที่มีคะแนนความเชื่อมั่นสูงสุด (Conviction >= 50)")
-            
-            # Tier 3 (Ultimate Fallback): Latest Scan, no threshold
-            if df_radar.empty:
-                df_radar = df_all.sort_values('score', ascending=False).head(20).copy()
-                if not df_radar.empty:
-                    radar_status_msg = "Watchlist / Low Conviction"
-                    st.info("💡 Ultimate Fallback: แสดงรายการหุ้นจากรอบสแกนล่าสุด (Watchlist / Low Conviction)")
-            
-            # Add status label to dataframe
-            if not df_radar.empty:
-                df_radar['Radar_Status'] = radar_status_msg
-            
-            # 2. Historical Outcome Verification
-            def get_win_rate(sig):
-                sig_cat = 'BUY / BREAKOUT' if 'BUY' in str(sig).upper() or 'BREAKOUT' in str(sig).upper() else \
-                          'SILENT ACCUM' if 'SILENT' in str(sig).upper() else 'OTHER'
-                stats = perf_stats.get(sig_cat, {})
-                return stats.get('Win_Rate', 0), stats.get('Avg_Return', 0)
-
-            if not df_radar.empty:
-                df_radar['Win_Rate'], df_radar['Avg_Return'] = zip(*df_radar['signal'].apply(get_win_rate))
+            # 1. Executive Summary Cards
+            ticker_list = SET100_TICKERS
+            with st.spinner("Evaluating daily signals..."):
+                all_data = batch_get_stock_data(ticker_list)
+                # Fetch optimized parameters
+                optimized_params = load_best_params()
+                signal_results = signal_engine.evaluate_daily_signals(all_data, optimized_params_dict=optimized_params)
+                entry_orders_df = signal_results['new_entries']
                 
-                # Risk/Reward calculation (Entry/SL/Target)
-                df_radar['RR_Ratio'] = "1:2.0"
+                # Active Positions Logic - Load from Supabase if available
+                if 'active_positions' not in st.session_state or st.session_state.get('active_positions') is None:
+                    if supabase:
+                        try:
+                            # Fetch positions with 'Pending' status from trading_log
+                            resp = supabase.table("trading_log").select("*").eq("status", "Pending").execute()
+                            if resp.data:
+                                df_active = pd.DataFrame(resp.data)
+                                # Map Supabase columns: ticker -> ticker, last_price -> entry_price, timestamp -> entry_date
+                                st.session_state['active_positions'] = df_active[['ticker', 'last_price', 'timestamp']].rename(columns={
+                                    'ticker': 'ticker',
+                                    'last_price': 'entry_price',
+                                    'timestamp': 'entry_date'
+                                })
+                            else:
+                                st.session_state['active_positions'] = pd.DataFrame(columns=['ticker', 'entry_price', 'entry_date'])
+                        except Exception as e:
+                            st.error(f"Error fetching positions from Supabase: {e}")
+                            st.session_state['active_positions'] = pd.DataFrame(columns=['ticker', 'entry_price', 'entry_date'])
+                    else:
+                        st.session_state['active_positions'] = pd.DataFrame(columns=['ticker', 'entry_price', 'entry_date'])
                 
-                # Display Table
-                st.subheader("🔥 Top Pre-Breakout Candidates")
-                # Safe Column Selection
-                radar_cols = {
-                    'ticker': 'Ticker', 
-                    'signal': 'Signal', 
-                    'Radar_Status': 'Status',
-                    'score': 'Conviction', 
-                    'Win_Rate': 'Win Rate (%)', 
-                    'Avg_Return': 'Avg Ret (%)',
-                    'RR_Ratio': 'R:R Ratio', 
-                    'close_price': 'Price'
-                }
-                display_cols = [c for c in radar_cols.keys() if c in df_radar.columns]
-                st.dataframe(
-                    df_radar[display_cols].rename(columns=radar_cols),
-                    use_container_width=True
+                active_pos_df = st.session_state['active_positions']
+                exit_control_df = signal_engine.check_active_positions(active_pos_df, all_data, optimized_params_dict=optimized_params)
+            
+            col_sc1, col_sc2, col_sc3 = st.columns(3)
+            col_sc1.metric("Today's New Buy Signals", len(entry_orders_df))
+            col_sc2.metric("Active Open Positions", len(active_pos_df))
+            
+            tp_sl_reached = 0
+            if not exit_control_df.empty:
+                tp_sl_reached = len(exit_control_df[exit_control_df['Action Required'].str.contains('SELL', na=False)])
+            col_sc3.metric("TP / SL Reached Today", tp_sl_reached)
+            
+            st.divider()
+            
+            # 2. Daily Action Plan Tables
+            st.markdown("### 🟢 Entry Orders for Tomorrow (T+1 Open)")
+            st.caption("ออเดอร์ที่เตรียมเข้าซื้อที่ราคาเปิดในวันทำการถัดไป (Zero Look-Ahead Bias)")
+            
+            if not entry_orders_df.empty:
+                st.dataframe(entry_orders_df, use_container_width=True, hide_index=True)
+                
+                csv_orders = entry_orders_df.to_csv(index=False).encode('utf-8-sig')
+                st.download_button(
+                    "📥 Download Tomorrow_Orders.csv",
+                    csv_orders,
+                    f"Tomorrow_Orders_{datetime.now(SET_TZ).strftime('%Y%m%d')}.csv",
+                    "text/csv",
+                    key='download-orders-command-center'
                 )
-                
-                # 3. Interactive Chart & Levels
-                st.divider()
-                selected_ticker = st.selectbox("เลือกหุ้นเพื่อดูแผนเทรด (Trade Plan):", df_radar['ticker'].unique(), key="radar_ticker")
-                
-                if selected_ticker:
-                    try:
-                        ticker_row = df_radar[df_radar['ticker'] == selected_ticker].iloc[0]
-                        entry_price = float(ticker_row['close_price'])
-                        
-                        # Fetch price data with Suffix Fallback (Safe Data Fetching)
-                        df_full = None
-                        tickers_to_try = [selected_ticker]
-                        
-                        # If .BK failed, try without .BK (or vice-versa)
-                        if selected_ticker.endswith('.BK'):
-                            tickers_to_try.append(selected_ticker.replace('.BK', ''))
-                        else:
-                            tickers_to_try.append(f"{selected_ticker}.BK")
-                            
-                        for t_sym in tickers_to_try:
-                            df_full = get_stock_data(t_sym)
-                            if df_full is not None and not df_full.empty:
-                                break
-                        
-                        if df_full is not None and not df_full.empty:
-                            df_full = calculate_quant_indicators(df_full)
-                            
-                            # Robust Indicator & Level Calculations
-                            last_atr = df_full['ATR'].iloc[-1]
-                            # Fallback if ATR is NaN: Use 3% of entry price
-                            if pd.isna(last_atr) or last_atr <= 0:
-                                last_atr = entry_price * 0.03
-                            
-                            # Ensure levels are floats
-                            stop_loss = float(entry_price - (last_atr * 2))
-                            risk = float(entry_price - stop_loss)
-                            target = float(entry_price + (risk * 2))
-                            
-                            # Limit to last 90 days for chart display
-                            df_chart = df_full.tail(90).copy()
-                            
-                            # Layout Metrics
-                            m1, m2, m3 = st.columns(3)
-                            m1.metric("Entry Price", f"{entry_price:.2f}")
-                            m2.metric("Stop Loss (2*ATR)", f"{stop_loss:.2f}", delta=f"{(stop_loss/entry_price-1)*100:.1f}%", delta_color="inverse")
-                            m3.metric("Target Price (R:R 1:2)", f"{target:.2f}", delta=f"{(target/entry_price-1)*100:.1f}%")
-                            
-                            # Plotly Chart Construction
-                            fig = go.Figure()
-                            fig.add_trace(go.Candlestick(
-                                x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
-                                low=df_chart['Low'], close=df_chart['Close'], name="Price"
-                            ))
-                            
-                            # Add Plan Lines (Strictly float values)
-                            fig.add_hline(y=float(entry_price), line_dash="dash", line_color="blue", annotation_text="Entry")
-                            fig.add_hline(y=float(stop_loss), line_dash="dash", line_color="red", annotation_text="Stop Loss")
-                            fig.add_hline(y=float(target), line_dash="dash", line_color="green", annotation_text="Target (1:2)")
-                            
-                            # Auto-fit Y-Axis Scale
-                            y_min = float(min(df_chart['Low'].min(), stop_loss) * 0.95)
-                            y_max = float(max(df_chart['High'].max(), target) * 1.05)
-                            
-                            fig.update_layout(
-                                title=f"Trade Plan: {selected_ticker} (Last 90 Days)", 
-                                height=550, 
-                                template="plotly_dark",
-                                yaxis=dict(range=[y_min, y_max], fixedrange=False),
-                                xaxis=dict(rangeslider=dict(visible=False))
-                            )
-                            st.plotly_chart(fig, use_container_width=True, config={
-                                'scrollZoom': False,
-                                'displayModeBar': True,
-                                'responsive': True
-                            })
-                        else:
-                            st.warning(f"⚠️ ไม่พบข้อมูลราคาย้อนหลังสำหรับ {selected_ticker} (โปรดตรวจสอบการเชื่อมต่อ Yahoo Finance)")
-                    except Exception as e:
-                        st.error(f"❌ เกิดข้อผิดพลาดในการสร้างกราฟของ {selected_ticker}: {str(e)}")
             else:
-                st.warning("ไม่พบหุ้นที่เข้าเกณฑ์การวิเคราะห์ในขณะนี้")
-        else:
-            st.warning("ไม่สามารถโหลดข้อมูลการสแกนล่าสุดได้")
-    except Exception as e:
-        st.info(f"💡 Smart Pattern Radar กำลังเตรียมความพร้อม หรือไม่พบข้อมูลในขณะนี้: {e}")
+                st.info("ℹ️ ยังไม่มีสัญญาณซื้อใหม่ในวันนี้")
+            
+            st.divider()
+            st.markdown("### 🔴 Exit & Risk Control Center")
+            st.caption("ติดตามสถานะออเดอร์ที่เปิดอยู่ และตรวจสอบจุดตัดขาดทุน/ทำกำไร")
+            
+            if not exit_control_df.empty:
+                def style_exit_table(row):
+                    action = str(row.get('Action Required', ''))
+                    if 'SELL' in action:
+                        color = 'rgba(239, 68, 68, 0.2)' if '(SL)' in action else 'rgba(34, 197, 94, 0.2)'
+                        return [f'background-color: {color}'] * len(row)
+                    return [''] * len(row)
+                
+                st.dataframe(exit_control_df.style.apply(style_exit_table, axis=1), use_container_width=True, hide_index=True)
+                
+                csv_exits = exit_control_df.to_csv(index=False).encode('utf-8-sig')
+                st.download_button(
+                    "📥 Download Exit_Orders.csv",
+                    csv_exits,
+                    f"Exit_Orders_{datetime.now(SET_TZ).strftime('%Y%m%d')}.csv",
+                    "text/csv",
+                    key='download-exits-command-center'
+                )
+            else:
+                st.info("ℹ️ ยังไม่มีออเดอร์ที่เปิดสถานะอยู่ (Active Positions)")
+                
+        except Exception as e:
+            st.error(f"เกิดข้อผิดพลาดใน Command Center: {e}")
 
-with main_tabs[1]: # Unified Report
-    try:
-        # Safe check for is_hist (already initialized as False above)
-        if not is_hist:
-            st.info("สรุปผลการวิเคราะห์เชิงปริมาณ (Search + Analyze + Persistence + Backtest)")
+    with sub_tabs[1]: # 🚀 Unified Scanner & Pattern Radar
+        # ... (Unified Scanner logic moved here)
+        try:
+            st.subheader("🚀 Unified Scanner & Pattern Radar")
             st.caption("🔍 **ระบบคัดกรองอัจฉริยะ:** รวม 3 กลยุทธ์ใหม่ (1) **Volume Compression** ตรวจจับวอลุ่มแห้งก่อนระเบิด (2) **Sector Flow Filter** คัดเฉพาะหุ้นที่แข็งแกร่งกว่ากลุ่ม (SRS) และ (3) **Dynamic Stop Loss** ปรับตามความผันผวนจริง (ATR)")
             
             # Ensure batch_df is available
@@ -2485,1500 +2458,484 @@ with main_tabs[1]: # Unified Report
                     st.info("ℹ️ ไม่พบหุ้นที่เข้าเกณฑ์ Unified")
             else:
                 st.warning("กรุณาทำการสแกนหุ้นก่อนเพื่อดูรายงาน Unified Report")
-        else:
-            st.info("📊 Mode: Historical Scan - รายงาน Unified Report จะแสดงเฉพาะการสแกนแบบ Real-time เท่านั้น")
-    except Exception as e:
-        st.error(f"❌ เกิดข้อผิดพลาดในหน้า Unified Report: {str(e)}")
-
-with main_tabs[2]: # Bottom Fishing
-    st.info("💎 หุ้นที่ Oversold และเริ่มมีสัญญาณกลับตัว (Bottom Fishing)")
-    st.caption("🎯 **Feature Insight:** ค้นหาหุ้นที่มี RSI ต่ำกว่า 35 และเริ่มมีแรงซื้อกลับ (RSI Turning Up) พร้อม Candlestick รูปแบบ Bullish Pin Bar เพื่อหาจังหวะต้นเทรนด์")
-    
-    # [HYBRID MANDATE] Use latest results from both sources
-    hybrid_results = fetch_market_scan_results()
-    
-    if not hybrid_results.empty:
-        # 1. Filtering for Oversold
-        hybrid_results['rsi'] = pd.to_numeric(hybrid_results['rsi'], errors='coerce')
-        oversold_df = hybrid_results[hybrid_results['rsi'] <= 35].copy()
-        
-        if not oversold_df.empty:
-            oversold_df = oversold_df.sort_values('rsi', ascending=True)
-            st.success(f"🎯 พบหุ้น Oversold (RSI <= 35) จำนวน {len(oversold_df)} ตัว")
             
-            # Display cards
-            for idx, row in oversold_df.iterrows():
-                r_dot_color = "#8b5cf6" 
-                r_sig_bg = "#f5f3ff"; r_sig_fg = "#5b21b6"
-                
-                # Build dynamic reasons based on available data
-                reasons = []
-                rsi_val = safe_float(row.get('rsi', 50))
-                if rsi_val < 30: reasons.append("Extreme Oversold (RSI < 30)")
-                elif rsi_val <= 35: reasons.append("Oversold Zone (RSI <= 35)")
-                if row.get('is_pinbar'): reasons.append("Bullish Pin Bar Detected")
-                if row.get('signal') == 'BUY': reasons.append("Positive Buy Signal")
-                
-                reasons_html = "".join([f'<div style="font-size: 0.75rem; color: #5b21b6; margin-bottom: 2px;">• {reason}</div>' for reason in reasons])
-                
-                # Card Content
-                r_card_html = f"""
-                <div class="compact-card">
-                    <div class="card-header">
-                        <div class="header-left">
-                            <div class="dot-indicator" style="background-color: {r_dot_color};"></div>
-                            <div class="ticker-name">{row['ticker']}</div>
-                        </div>
-                        <div class="status-pill recovery">OVERSOLD</div>
-                    </div>
-                    <div class="score-container">
-                        <div class="score-label">Score</div>
-                        <div class="score-big">{int(row['score']) if pd.notna(row['score']) else 0}</div>
-                    </div>
-                    <div style="display: flex; flex-direction: column; gap: 4px;">
-                        <div class="signal-badge" style="background-color: {r_sig_bg}; color: {r_sig_fg};">RSI: {row['rsi']:.1f}</div>
-                        <div style="font-size: 0.75rem; font-weight: 600; color: #7c3aed;">Signal: {row['signal']}</div>
-                        <div style="font-size: 0.75rem; font-weight: 600; color: #4b5563;">Strategy: {row['strategy'] if row['strategy'] else 'N/A'}</div>
-                    </div>
-                    <div style="margin-top: 10px; padding: 6px; background-color: #fdfcff; border-radius: 8px; border: 1px dashed #ddd6fe;">
-                        {reasons_html}
-                    </div>
-                    <div class="stats-grid">
-                        <div class="stat-item"><div class="stat-lbl">RSI</div><div class="stat-val">{row['rsi']:.1f}</div></div>
-                        <div class="stat-item"><div class="stat-lbl">PRICE</div><div class="stat-val">{row['close_price']:.2f}</div></div>
-                        <div class="stat-item"><div class="stat-lbl">PIN BAR</div><div class="stat-val">{'✅' if row.get('is_pinbar') else '❌'}</div></div>
-                    </div>
-                </div>
-                """
-                # Clean HTML indentation and render
-                clean_r_card_html = textwrap.dedent(r_card_html).strip()
-                st.markdown(clean_r_card_html, unsafe_allow_html=True)
-                
-                with st.expander(f"Analysis: {row['ticker']}"):
-                    st.write(f"🔍 **เหตุผลที่ติดโผ:** {', '.join(reasons)}")
-                    if user_api_key:
-                        if st.button(f"Oversold AI Plan: {row['ticker']}", key=f"tab_oversold_btn_{row['ticker']}"):
-                            dummy_row = {'Last Price': row['close_price'], 'Signal': row['signal'], 'Bullish Score (%)': row['score'], 'Bearish Score (%)': 0, 'Score Diff': row['score'], 'MTF Conf': 'N/A', 'MTF Score': 0, 'Relative Vol': 1.0, 'Pattern Consensus (%)': 50}
-                            st.markdown(generate_ai_trading_plan(row['ticker'], dummy_row, user_api_key))
-            
+            # --- Bottom Fishing ---
             st.divider()
-            st.subheader("📋 ตารางสรุปหุ้น Oversold (Summary Table)")
-            summary_cols = ['ticker', 'rsi', 'close_price', 'signal', 'strategy', 'source', 'scanned_at']
-            st.dataframe(oversold_df[summary_cols].rename(columns={
-                'ticker': 'Ticker',
-                'rsi': 'RSI',
-                'close_price': 'Price',
-                'signal': 'Signal',
-                'strategy': 'Strategy',
-                'source': 'Source',
-                'scanned_at': 'Scanned At'
-            }), use_container_width=True)
-        else:
-            st.info("ℹ️ ยังไม่พบหุ้น Oversold (RSI <= 35)")
-    else:
-        st.info("ℹ️ ยังไม่มีข้อมูลการสแกนในระบบ (กรุณากด Run SET100 Batch Scan หรือรอระบบ Auto Scan)")
-
-with main_tabs[3]: # Market Breadth
-    st.subheader(f"📊 Market Breadth: หุ้นบวก {pos_count} | หุ้นลบ {neg_count}")
-    st.caption("📈 **Market Breadth:** สรุปภาพรวมความแข็งแกร่งของตลาด SET100 ผ่านจำนวนหุ้นที่บวกและลบ เพื่อดูทิศทางกระแสเงินทุน (Money Flow)")
-    
-    # --- SIGNALS BY CATEGORY ---
-    if 'Signal' in batch_df.columns:
-        st.divider()
-        st.markdown("### 📊 Signals by Category")
-        st.caption("🌐 **Sector Relative Strength (SRS):** วิเคราะห์เปรียบเทียบหุ้นกับค่าเฉลี่ยของกลุ่มอุตสาหกรรม เพื่อหาหุ้นที่ 'แข็งแกร่งกว่าตลาด' (Outperformer)")
-        sig_counts = batch_df['Signal'].value_counts().reset_index()
-        sig_counts.columns = ['Signal', 'Count']
-        
-        # Use small columns for a compact overview
-        num_cols = min(len(sig_counts), 6)
-        s_cols = st.columns(num_cols)
-        for i, (_, s_row) in enumerate(sig_counts.iterrows()):
-            s_cols[i % num_cols].metric(s_row['Signal'], s_row['Count'])
-        
-        st.dataframe(sig_counts, use_container_width=True)
-        
-        # --- SILENT ACCUM CLUSTER DETECTION ---
-        sa_count = sig_counts[sig_counts['Signal'] == 'SILENT ACCUM']['Count'].values[0] if 'SILENT ACCUM' in sig_counts['Signal'].values else 0
-        if sa_count >= 3:
-            st.info(f"🔵 **Smart Money Accumulation Cluster Detected!**  \nพบหุ้น SET100 ติดสัญญาณ `SILENT ACCUM` พร้อมกัน **{sa_count} ตัว**  \n*แนวโน้ม: ตลาดมีโอกาสเกิด Reversal ขาขึ้นในระยะสั้น (Confidence: High)*")
-            st.caption("💡 **Feature Insight:** ระบบตรวจพบการเก็บของพร้อมกันในหลายตัว (Cluster) ซึ่งเป็นสัญญาณบ่งชี้ Market Breadth ว่าเงินทุนกำลังไหลเข้าสะสมหุ้นในกลุ่ม SET100")
-
-with main_tabs[4]: # Admin & History
-    st.subheader("🏆 Leaderboard & History (Supabase)")
-    st.caption("📜 **Data Persistence:** ดึงข้อมูลประวัติการสแกนและผลแพ้ชนะ (Win/Loss) ย้อนหลังโดยตรงจากฐานข้อมูล Cloud (Supabase)")
-    # Sorting desired columns to the front
-    cols = batch_df.columns.tolist()
-    desired_order = ["Ticker", "Signal", "Pattern Consensus (%)", "Last Price", "Day High"]
-    actual_order = [c for c in desired_order if c in batch_df.columns]
-    display_df = batch_df[actual_order + [c for c in cols if c not in actual_order]]
-    
-    with st.expander("🔍 View Scanner Leaderboard (Table)", expanded=True):
-        st.dataframe(display_df, use_container_width=True)
-    
-    st.divider()
-    st.subheader("📜 Database & Labeling")
-    
-    l1, l2 = st.columns([1, 2])
-    if l1.button("🏷️ Run Automated Labeling", use_container_width=True):
-        with st.spinner("Updating labels..."):
-            count = run_automated_labeling()
-            st.success(f"Updated {count} records!") if count > 0 else st.info("No new records to label.")
-
-    with st.expander("View Saved Scan History", expanded=False):
-        if supabase:
-            try:
-                response = supabase.table("scan_results") \
-                    .select("*") \
-                    .order("id", desc=True) \
-                    .limit(500) \
-                    .execute()
-                history_df = pd.DataFrame(response.data)
+            st.info("💎 หุ้นที่ Oversold และเริ่มมีสัญญาณกลับตัว (Bottom Fishing)")
+            st.caption("🎯 **Feature Insight:** ค้นหาหุ้นที่มี RSI ต่ำกว่า 35 และเริ่มมีแรงซื้อกลับ (RSI Turning Up) พร้อม Candlestick รูปแบบ Bullish Pin Bar เพื่อหาจังหวะต้นเทรนด์")
+            
+            # [HYBRID MANDATE] Use latest results from both sources
+            hybrid_results = fetch_market_scan_results()
+            
+            if not hybrid_results.empty:
+                # 1. Filtering for Oversold
+                hybrid_results['rsi'] = pd.to_numeric(hybrid_results['rsi'], errors='coerce')
+                oversold_df = hybrid_results[hybrid_results['rsi'] <= 35].copy()
                 
-                if not history_df.empty:
-                    def style_outcome(val):
-                        if val == 'Win': return 'color: green; font-weight: bold'
-                        if val == 'Loss': return 'color: red'
-                        return ''
-                    st.dataframe(history_df.style.map(style_outcome, subset=['outcome_label']), use_container_width=True)
-                
-                st.write("### 📊 Quick Insights from DB")
-                c1, c2, c3 = st.columns(3)
-                # Load labeled data for metrics
-                labeled_df = pd.DataFrame()
-                try:
-                    l_resp = supabase.table("scan_results").select("*").not_.is_("outcome_label", "null").execute()
-                    labeled_df = pd.DataFrame(l_resp.data)
-                except: pass
-                
-                if not labeled_df.empty:
-                    win_rate = (len(labeled_df[labeled_df['outcome_label'] == 'Win']) / len(labeled_df)) * 100
-                    c2.metric("Win Rate (Labeled)", f"{win_rate:.1f}%")
-                
-                unique_tickers = history_df['ticker'].unique()
-                selected_h_ticker = c3.selectbox("Select Ticker for Score Trend", unique_tickers, key="hist_ticker_select")
-                if selected_h_ticker:
-                    ticker_history = history_df[history_df['ticker'] == selected_h_ticker].sort_values('id')
-                    c3.line_chart(ticker_history.set_index('scan_date')['bull_score'])
-            except Exception as e:
-                st.error(f"Error loading history: {e}")
-    
-    st.divider()
-    st.subheader("📤 Export & Printing Tools")
-    ex1, ex2, ex3 = st.columns(3)
-    
-    # Formatting and Styling for Export
-    def style_batch(styler):
-        # Safe column check for highlight_best
-        def highlight_best(row):
-            styles = [''] * len(row)
-            try:
-                if 'Signal' in row.index and 'BUY' in str(row['Signal']): 
-                    styles = ['background-color: rgba(34, 197, 94, 0.2)'] * len(row)
-                elif 'Bearish Score (%)' in row.index and safe_float(row['Bearish Score (%)']) > 85: 
-                    styles = ['background-color: rgba(239, 68, 68, 0.2)'] * len(row)
-            except:
-                pass
-            return styles
-            
-        styler.apply(highlight_best, axis=1)
-        
-        # Safe Subset Alignment for Pandas Styler
-        if 'Signal' in styler.data.columns:
-            styler.map(lambda x: 'color: lime; font-weight: bold' if 'BUY' in str(x) else ('color: red; font-weight: bold' if x == 'SELL' else 'color: gray'), subset=['Signal'])
-        
-        # Safe formatting
-        format_dict = {
-            'Last Price': '{:.2f}', 
-            '% Change': '{:+.2f}%', 
-            'Relative Vol': '{:.2f}x', 
-            'MTF Score': '{:.0f}', 
-            'Pattern Consensus (%)': '{:.1f}%', 
-            'Bullish Score (%)': '{:.1f}%', 
-            'Bearish Score (%)': '{:.1f}%', 
-            'Score Diff': '{:.1f}'
-        }
-        # Filter only existing columns
-        safe_format = {k: v for k, v in format_dict.items() if k in styler.data.columns}
-        if safe_format:
-            styler.format(safe_format)
-            
-        return styler
-
-    # Graceful HTML Export Fallback
-    html_buffer = ""
-    try:
-        styled_export = style_batch(display_df.style)
-        html_buffer = styled_export.to_html()
-    except Exception as e:
-        # Fallback to plain HTML if styling fails
-        html_buffer = display_df.to_html()
-        st.caption(f"⚠️ Export styling failed, showing plain table. Error: {e}")
-    
-    ex1.checkbox("📸 Full-Length View (For PDF)", key="admin_full_view")
-    
-    full_html = f"<html><body><h2>🏆 SET100 Quant Report</h2>{html_buffer}</body></html>"
-    ex2.download_button("📄 Download HTML Report", data=full_html, file_name=f"SET100_Report_{datetime.now(SET_TZ).strftime('%Y%m%d_%H%M')}.html", mime="text/html", use_container_width=True)
-    
-    csv = display_df.to_csv(index=False).encode('utf-8-sig')
-    ex3.download_button("Excel/CSV Export", data=csv, file_name=f"SET100_Data_{datetime.now(SET_TZ).strftime('%Y%m%d_%H%M')}.csv", mime="text/csv", use_container_width=True)
-
-with main_tabs[5]: # SILENT ACCUM Insight
-    st.info("💎 เจาะลึกพฤติกรรมหุ้น SILENT ACCUM: วัดระยะเวลาการฟื้นตัวและโอกาสชนะ")
-    st.caption("📈 **Feature Insight:** วิเคราะห์สถิติย้อนหลังของสัญญาณ SILENT ACCUM เพื่อหาค่าเฉลี่ยจำนวนวันที่ราคามักจะ 'ระเบิด' (Days to Move) และอัตราการชนะ (Win Rate) ภายใน 5 วัน")
-    
-    # 0. Display Control
-    row_limit = st.slider("จำนวนรายการที่แสดงผลล่าสุด", min_value=10, max_value=200, value=30, step=10, key="sa_row_limit")
-    
-    sa_data = get_silent_accum_insights(limit=row_limit)
-    
-    if sa_data is not None and not sa_data.empty:
-        # 1. Overview Metrics
-        # Only calculate metrics for rows that have days_to_move (historical)
-        hist_sa = sa_data[sa_data['days_to_move'].notna()]
-        
-        if not hist_sa.empty:
-            avg_days = hist_sa['days_to_move'].mean()
-            win_rate_t5 = (hist_sa['win_t5'].sum() / len(hist_sa)) * 100
-        else:
-            avg_days = 0
-            win_rate_t5 = 0
-            
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Avg. Days to Move", f"{avg_days:.1f} Days")
-        m2.metric("Win Rate (T+5)", f"{win_rate_t5:.1f}%")
-        m3.metric("Sample Size", f"{len(sa_data)} Signals")
-        
-        # 2. Distribution Chart
-        st.write("### 📊 Distribution of Days to Move (+1% Upside)")
-        dist_df = sa_data['days_to_move'].value_counts().sort_index().reset_index()
-        dist_df.columns = ['Days', 'Frequency']
-        
-        fig_sa = go.Figure(go.Bar(
-            x=dist_df['Days'], y=dist_df['Frequency'],
-            text=dist_df['Frequency'], textposition='auto',
-            marker=dict(color='#10b981')
-        ))
-        fig_sa.update_layout(height=350, margin=dict(t=20, b=20, l=20, r=20), xaxis_title="Trading Days", yaxis_title="Number of Cases")
-        st.plotly_chart(fig_sa, use_container_width=True)
-        
-        # 3. Recent Cases
-        st.write(f"### 📜 Recent SILENT ACCUM Cases (Top {row_limit})")
-        st.dataframe(
-            sa_data[['ticker', 'signal_date', 'score', 'days_to_move', 'max_gain_t5']]
-            .style.format({
-                'max_gain_t5': '{:.2f}%',
-                'days_to_move': '{:.0f}',
-                'score': '{:.1f}'
-            }, na_rep='Pending'), 
-            use_container_width=True
-        )
-
-        st.divider()
-        # 4. Single Ticker Analysis
-        st.divider()
-        st.write("### 🔍 SILENT ACCUM Single Ticker Analysis")
-        
-        # Fetch all unique tickers that have SILENT ACCUM signals to populate selectbox
-        all_sa_tickers = []
-        if sa_data is not None and not sa_data.empty:
-            all_sa_tickers = sorted(sa_data['ticker'].unique().tolist())
-        
-        sel_sa_ticker = st.selectbox("เลือกหุ้นเพื่อดูประวัติ SILENT ACCUM รายตัว", all_sa_tickers, key="sa_ticker_select_new")
-        
-        if sel_sa_ticker:
-            # Fetch full historical analysis for THIS specific ticker (Intraday Timeline)
-            with st.spinner(f"กำลังวิเคราะห์ประวัติ SILENT ACCUM สำหรับ {sel_sa_ticker}..."):
-                # [INTRADAY TIMELINE] Set deduplicate=False to see all signals for this ticker
-                ticker_sa = get_silent_accum_insights(limit=None, ticker_filter=sel_sa_ticker, deduplicate=False)
-            
-            if ticker_sa is not None and not ticker_sa.empty:
-                # 1. Price Chart with SILENT ACCUM Markers (Full Width)
-                st.write(f"**Price Chart with SILENT ACCUM Markers: {sel_sa_ticker}**")
-                
-                try:
-                    with st.spinner(f"ดึงข้อมูลกราฟสำหรับ {sel_sa_ticker}..."):
-                        # Implement Auto Suffix Retry / Fallback (Safe Data Fetching)
-                        hist_price_raw = None
-                        tickers_to_try = [sel_sa_ticker]
+                if not oversold_df.empty:
+                    oversold_df = oversold_df.sort_values('rsi', ascending=True)
+                    st.success(f"🎯 พบหุ้น Oversold (RSI <= 35) จำนวน {len(oversold_df)} ตัว")
+                    
+                    # Display cards
+                    for idx, row in oversold_df.iterrows():
+                        r_dot_color = "#8b5cf6" 
+                        r_sig_bg = "#f5f3ff"; r_sig_fg = "#5b21b6"
                         
-                        # If .BK failed, try without .BK (or vice-versa)
-                        if sel_sa_ticker.endswith('.BK'):
-                            tickers_to_try.append(sel_sa_ticker.replace('.BK', ''))
-                        else:
-                            tickers_to_try.append(f"{sel_sa_ticker}.BK")
-                            
-                        for t_sym in tickers_to_try:
-                            hist_price_raw = get_stock_data(t_sym)
-                            if hist_price_raw is not None and not hist_price_raw.empty:
-                                break
+                        # Build dynamic reasons based on available data
+                        reasons = []
+                        rsi_val = safe_float(row.get('rsi', 50))
+                        if rsi_val < 30: reasons.append("Extreme Oversold (RSI < 30)")
+                        elif rsi_val <= 35: reasons.append("Oversold Zone (RSI <= 35)")
+                        if row.get('is_pinbar'): reasons.append("Bullish Pin Bar Detected")
+                        if row.get('signal') == 'BUY': reasons.append("Positive Buy Signal")
                         
-                        if hist_price_raw is not None and not hist_price_raw.empty:
-                            # Standardize for plotting (Last 180 days)
-                            df_plot = hist_price_raw.tail(180).copy()
-                            # Ensure index is naive datetime for Plotly and marker alignment
-                            if df_plot.index.tz is not None:
-                                df_plot.index = df_plot.index.tz_convert(SET_TZ).tz_localize(None)
-                            
-                            # 1. Create Subplots: Price (Candlestick) + Volume
-                            fig = make_subplots(
-                                rows=2, cols=1, 
-                                shared_xaxes=True, 
-                                vertical_spacing=0.05, 
-                                row_heights=[0.7, 0.3]
-                            )
-                            
-                            # Candlestick
-                            fig.add_trace(go.Candlestick(
-                                x=df_plot.index, 
-                                open=df_plot['Open'], 
-                                high=df_plot['High'], 
-                                low=df_plot['Low'], 
-                                close=df_plot['Close'], 
-                                name='Price'
-                            ), row=1, col=1)
-                            
-                            # Volume
-                            fig.add_trace(go.Bar(
-                                x=df_plot.index, 
-                                y=df_plot['Volume'], 
-                                name='Volume', 
-                                marker_color='rgba(100, 100, 100, 0.5)'
-                            ), row=2, col=1)
-                            
-                            # 2. Add SILENT ACCUM Markers (Pin to Low Price)
-                            # Alignment: Convert signal dates to naive date objects for comparison
-                            sig_dates = pd.to_datetime(ticker_sa['signal_date']).dt.date.unique().tolist()
-                            df_plot_dates = df_plot.index.date
-                            
-                            # Filter rows in df_plot that match a signal date
-                            marker_mask = [d in sig_dates for d in df_plot_dates]
-                            markers = df_plot[marker_mask].copy()
-                            
-                            if not markers.empty:
-                                fig.add_trace(go.Scatter(
-                                    x=markers.index, 
-                                    y=markers['Low'] * 0.98, 
-                                    mode='markers', 
-                                    marker=dict(
-                                        symbol='triangle-up', 
-                                        size=15, 
-                                        color='#3b82f6', 
-                                        line=dict(width=2, color='white')
-                                    ), 
-                                    name='SILENT ACCUM Signal', 
-                                    hovertemplate='<b>SILENT ACCUM</b><br>Date: %{x}<br>Price: %{y:.2f}'
-                                ), row=1, col=1)
-                            
-                            # Final Layout Update
-                            fig.update_layout(
-                                height=650, 
-                                margin=dict(t=30, b=30, l=30, r=30), 
-                                template='plotly_dark', 
-                                xaxis_rangeslider_visible=False, 
-                                showlegend=True, 
-                                legend=dict(
-                                    orientation="h", 
-                                    yanchor="bottom", 
-                                    y=1.02, 
-                                    xanchor="right", 
-                                    x=1
-                                )
-                            )
-                            st.plotly_chart(fig, use_container_width=True, config={
-                                'scrollZoom': False,
-                                'displayModeBar': True,
-                                'responsive': True
-                            })
-                        else:
-                            st.warning(f"⚠️ ไม่สามารถดึงข้อมูลราคาของ {sel_sa_ticker} จาก Yahoo Finance ได้ในขณะนี้ กรุณาลองใหม่อีกครั้งหรือตรวจสอบ Ticker")
-                except Exception as chart_err:
-                    st.error(f"❌ เกิดข้อผิดพลาดในการสร้างกราฟของ {sel_sa_ticker}: {str(chart_err)}")
-                
-                # 2. Intraday Signal History Table (Below Chart)
-                st.write(f"**Intraday Signal History: {sel_sa_ticker}**")
-                st.caption("🕒 **Intraday Tracking:** แสดงประวัติสัญญาณทุกรอบเวลาที่เกิดขึ้น (Debounced 15-min)")
-                
-                # Prepare display dataframe
-                display_sa = ticker_sa[['signal_date', 'signal_time', 'score', 'scan_type', 'days_to_move', 'max_gain_t5']].copy()
-                display_sa = display_sa.rename(columns={
-                    'signal_date': 'Date',
-                    'signal_time': 'Time',
-                    'score': 'Score',
-                    'scan_type': 'Type',
-                    'days_to_move': 'Days to Move',
-                    'max_gain_t5': 'Max Gain (T+5)'
-                })
-                
-                st.dataframe(
-                    display_sa.style.format({
-                        'Max Gain (T+5)': '{:.2f}%',
-                        'Days to Move': '{:.0f}',
-                        'Score': '{:.1f}'
-                    }, na_rep='-'),
-                    use_container_width=True
-                )
-            else:
-                st.info(f"ไม่พบประวัติสัญญาณ SILENT ACCUM สำหรับ {sel_sa_ticker} ในช่วง 90 วันที่ผ่านมา")
-
-    else:
-        st.warning("ยังไม่มีข้อมูล SILENT ACCUM เพียงพอสำหรับการวิเคราะห์")
-
-
-with main_tabs[6]: # Market Scan Results (Hybrid)
-    st.info("📊 Market Scan Results (SET100)")
-    st.caption("🕒 **Hybrid View:** แสดงผลการวิเคราะห์ล่าสุดของหุ้นแต่ละตัว โดยรวมข้อมูลจากทั้งการสแกนอัตโนมัติ (Auto) และการสแกนด้วยตนเอง (Manual)")
-    
-    combined_df = fetch_market_scan_results()
-    
-    if not combined_df.empty:
-        # 1. Metric Summary
-        last_scan = combined_df['scanned_at'].max()
-        buy_count = len(combined_df[combined_df['signal'] == 'BUY'])
-        wait_count = len(combined_df[combined_df['signal'].str.contains('WAIT', na=False)])
-        
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total Stocks", len(combined_df))
-        m2.metric("BUY Signals", buy_count)
-        m3.metric("WAIT Signals", wait_count)
-        m4.metric("Latest Update", last_scan.strftime("%H:%M:%S"))
-        
-        st.divider()
-        
-        # 2. Filters
-        f1, f2, f3 = st.columns([1, 1, 2])
-        sig_options = ["ALL"] + sorted(combined_df['signal'].dropna().unique().tolist())
-        sel_sig = f1.selectbox("Filter Signal", sig_options, key="mkt_sig_filter")
-        
-        strat_options = ["ALL"] + sorted(combined_df['strategy'].dropna().unique().tolist())
-        sel_strat = f2.selectbox("Filter Strategy", strat_options, key="mkt_strat_filter")
-        
-        search_ticker = f3.text_input("🔍 Ticker Search", "", key="mkt_ticker_search").upper()
-        
-        # Apply Filters
-        filtered_mkt = combined_df.copy()
-        if sel_sig != "ALL":
-            filtered_mkt = filtered_mkt[filtered_mkt['signal'] == sel_sig]
-        if sel_strat != "ALL":
-            filtered_mkt = filtered_mkt[filtered_mkt['strategy'] == sel_strat]
-        if search_ticker:
-            filtered_mkt = filtered_mkt[filtered_mkt['ticker'].str.contains(search_ticker)]
-        
-        # 3. Display Dataframe with Styling
-        def style_mkt_scan(styler):
-            def highlight_buy(row):
-                return ['background-color: rgba(34, 197, 94, 0.15)' if row['signal'] == 'BUY' else '' for _ in row]
-            
-            styler.apply(highlight_buy, axis=1)
-            styler.format({
-                'price': '{:.2f}',
-                'close_price': '{:.2f}',
-                'change_percent': '{:+.2f}%',
-                'score': '{:.1f}',
-                'bull_score': '{:.1f}',
-                'rsi': '{:.1f}',
-                'volume': '{:,.0f}'
-            }, na_rep='N/A')
-            return styler
-
-        st.subheader(f"📋 Market Results ({len(filtered_mkt)} stocks)")
-        if not filtered_mkt.empty:
-            # Map price if needed
-            if 'price' in filtered_mkt.columns:
-                filtered_mkt['close_price'] = filtered_mkt['price']
-                
-            # Reorder columns for readability
-            display_cols = [
-                'ticker', 'signal', 'score', 'strategy', 'close_price', 
-                'change_percent', 'rsi', 'volume', 'source', 'scanned_at'
-            ]
-            actual_display = [c for c in display_cols if c in filtered_mkt.columns]
-            st.dataframe(style_mkt_scan(filtered_mkt[actual_display].style), use_container_width=True)
-        else:
-            st.warning("ไม่พบข้อมูลตามเงื่อนไขที่กรอง")
-
-        # --- NEW SECTION: Historical Signal Analysis ---
-        st.divider()
-        st.subheader("📈 Stock Historical Signal Analysis")
-        st.caption("📊 **Historical Analysis:** เจาะลึกประวัติสัญญาณเทรดและแนวโน้มราคาย้อนหลัง 90 วัน (Hybrid Data)")
-        
-        all_tickers = sorted([str(t) for t in combined_df['ticker'].dropna().unique().tolist()])
-        sel_hist_ticker = st.selectbox("เลือกหุ้นเพื่อดูประวัติสัญญาณ", all_tickers, key="mkt_hist_ticker_select")
-        
-        if sel_hist_ticker:
-            with st.spinner(f"Loading historical data for {sel_hist_ticker}..."):
-                # Fetch price data
-                hist_price_raw = get_stock_data(sel_hist_ticker)
-                if hist_price_raw is not None:
-                    # 1. Prepare Price Data
-                    hist_price = calculate_quant_indicators(hist_price_raw, 14, 10, 50)
-                    hist_price = hist_price.tail(90).copy()
-                    # Convert index to string 'YYYY-MM-DD' for exact matching
-                    hist_price['date_str'] = hist_price.index.strftime('%Y-%m-%d')
-                    
-                    # 2. Fetch & Prepare Signal Data
-                    hist_signals = fetch_ticker_combined_history(sel_hist_ticker, days=90)
-                    
-                    if not hist_signals.empty:
-                        # Standardize signal dates to 'YYYY-MM-DD' strings
-                        hist_signals['signal_date_str'] = pd.to_datetime(hist_signals['scanned_at']).dt.strftime('%Y-%m-%d')
+                        reasons_html = "".join([f'<div style="font-size: 0.75rem; color: #5b21b6; margin-bottom: 2px;">• {reason}</div>' for reason in reasons])
                         
-                        # Unify Signal Naming for Mapping (Excluding SILENT ACCUM)
-                        def clean_signal_name(row):
-                            sig = str(row.get('signal', '')).upper()
-                            strat = str(row.get('strategy', '')).upper()
-                            is_silent = bool(row.get('is_silent_accum', False))
-                            
-                            # EXCLUDE SILENT ACCUM (Moved to dedicated tab)
-                            if 'SILENT' in sig or 'SILENT' in strat or is_silent: return None
-                            
-                            if 'BUY' in sig or 'BREAKOUT' in sig: return 'BUY / BREAKOUT'
-                            if 'PULLBACK' in sig or 'RETEST' in sig or 'PIN BAR' in sig: return 'PULLBACK / PIN BAR'
-                            if 'MOMENTUM' in sig or 'VOLUME' in sig or 'RECOVERY' in sig: return 'MOMENTUM / VOL'
-                            
-                            # Default all other bearish/unknown to SELL / WARNING
-                            return 'SELL / WARNING'
-
-                        hist_signals['display_signal'] = hist_signals.apply(clean_signal_name, axis=1)
-                        
-                        # Dynamic Signal Selection Controls
-                        # Filter out None/NaN and get unique sorted list
-                        available_signals = sorted([str(s) for s in hist_signals['display_signal'].dropna().unique().tolist()])
-                        selected_display_signals = st.multiselect(
-                            "🎯 เลือกประเภทสัญญาณที่ต้องการแสดง (Multi-Signal Overlay)", 
-                            available_signals, 
-                            default=available_signals,
-                            key="hist_sig_multiselect"
-                        )
-                        
-                        # Filter signals by selected types and ticker
-                        clean_sel_ticker = sel_hist_ticker.strip().upper()
-                        base_sel_ticker = clean_sel_ticker.replace('.BK', '')
-                        hist_signals['ticker_clean'] = hist_signals['ticker'].str.strip().str.upper().str.replace('.BK', '')
-                        
-                        filtered_signals = hist_signals[
-                            (hist_signals['display_signal'].isin(selected_display_signals)) & 
-                            (hist_signals['ticker_clean'] == base_sel_ticker)
-                        ].copy()
-                        
-                        # FINAL DEBOUNCE LOGIC: Only show Initial Signal Trigger (Debounce consecutive signals)
-                        if not filtered_signals.empty:
-                            filtered_signals = filtered_signals.sort_values('scanned_at', ascending=True)
-                            debounced_rows = []
-                            last_signal_type = None
-                            last_signal_date = None
-                            gap_days = 5  # Allow repeating the same signal type after 5 days
-                            
-                            for _, sig_row in filtered_signals.iterrows():
-                                curr_type = sig_row['display_signal']
-                                curr_date = pd.to_datetime(sig_row['signal_date_str'])
-                                
-                                is_trigger = False
-                                if curr_type != last_signal_type:
-                                    is_trigger = True
-                                elif last_signal_date is not None:
-                                    days_diff = (curr_date - last_signal_date).days
-                                    if days_diff >= gap_days:
-                                        is_trigger = True
-                                
-                                if is_trigger:
-                                    debounced_rows.append(sig_row)
-                                    last_signal_type = curr_type
-                                    last_signal_date = curr_date
-                            
-                            filtered_signals = pd.DataFrame(debounced_rows)
-                        
-                        # Print Debug Summary to Streamlit (Temporary Check)
-                        st.caption(f"🔍 DEBUG: Found {len(filtered_signals)} debounced technical signals for {sel_hist_ticker} (Last 90 days)")
-                    else:
-                        filtered_signals = pd.DataFrame()
-                        selected_display_signals = []
-
-                    # Create Plotly Chart
-                    fig_hist = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-                    
-                    # 1. Candlestick (Use Datetime Index for X-axis)
-                    fig_hist.add_trace(go.Candlestick(
-                        x=hist_price.index,
-                        open=hist_price['Open'],
-                        high=hist_price['High'],
-                        low=hist_price['Low'],
-                        close=hist_price['Close'],
-                        name="Price"
-                    ), row=1, col=1)
-                    
-                    # 2. Add Multi-Signal Markers (Overlay using Exact Date Matching)
-                    # Optimized Color & Symbol Mapping for Technical Signals
-                    SIGNAL_STYLE = {
-                        'BUY / BREAKOUT': {'symbol': 'triangle-up', 'color': '#10b981', 'size': 14, 'label': '🟢 BUY / BREAKOUT'},
-                        'SELL / WARNING': {'symbol': 'triangle-down', 'color': '#ef4444', 'size': 14, 'label': '🔴 SELL / WARNING'},
-                        'PULLBACK / PIN BAR': {'symbol': 'diamond', 'color': '#f59e0b', 'size': 12, 'label': '🟡 PULLBACK / PIN BAR'},
-                        'MOMENTUM / VOL': {'symbol': 'square', 'color': '#a855f7', 'size': 12, 'label': '🟣 MOMENTUM / VOL'}
-                    }
-
-                    if not filtered_signals.empty:
-                        # Join signals with price data on date string to get correct OHLC positions
-                        df_markers = hist_price.merge(
-                            filtered_signals, 
-                            left_on='date_str', 
-                            right_on='signal_date_str', 
-                            how='inner'
-                        )
-                        
-                        if not df_markers.empty:
-                            # Ensure the merged dataframe has the original datetime index for plotting
-                            df_markers.index = pd.to_datetime(df_markers['date_str'])
-                            
-                            for sig_name in selected_display_signals:
-                                sig_group = df_markers[df_markers['display_signal'] == sig_name]
-                                if sig_group.empty: continue
-                                
-                                style = SIGNAL_STYLE.get(sig_name, SIGNAL_STYLE['SELL / WARNING'])
-                                
-                                # Strict Y-axis Alignment based on Signal Type
-                                y_pos = []
-                                for _, m_row in sig_group.iterrows():
-                                    # Buy-side signals -> Below candle
-                                    if sig_name in ['BUY / BREAKOUT', 'PULLBACK / PIN BAR', 'MOMENTUM / VOL']:
-                                        y_pos.append(m_row['Low'] * 0.98)
-                                    # Sell-side/Warning/Other signals -> Above candle
-                                    else:
-                                        y_pos.append(m_row['High'] * 1.02)
-                                
-                                hover_texts = []
-                                for _, m_row in sig_group.iterrows():
-                                    h_rsi = f"RSI: {m_row.get('rsi', 0):.1f}" if pd.notna(m_row.get('rsi')) else ""
-                                    h_vol = f"Vol: {m_row.get('volume', 0):,.0f}" if pd.notna(m_row.get('volume')) else ""
-                                    score = m_row.get('score', 'N/A')
-                                    
-                                    # Use specific signal name for tooltip if category is SELL / WARNING
-                                    display_title = m_row.get('signal', sig_name) if sig_name == 'SELL / WARNING' else sig_name
-                                    hover_texts.append(f"<b>{display_title}</b><br>Score: {score}<br>{h_rsi}<br>{h_vol}")
-
-                                fig_hist.add_trace(go.Scatter(
-                                    x=sig_group.index, 
-                                    y=y_pos,
-                                    mode='markers',
-                                    marker=dict(
-                                        symbol=style['symbol'], 
-                                        size=style['size'], 
-                                        color=style['color'],
-                                        line=dict(width=1, color='white') # Add white border for visibility
-                                    ),
-                                    name=style['label'],
-                                    text=hover_texts,
-                                    hovertemplate="%{text}<extra></extra>",
-                                    showlegend=True
-                                ), row=1, col=1)
-                    
-                    # 3. RSI Subplot
-                    fig_hist.add_trace(go.Scatter(
-                        x=hist_price.index, y=hist_price['RSI'],
-                        name="RSI", line=dict(color='#8b5cf6', width=2)
-                    ), row=2, col=1)
-                    
-                    fig_hist.add_hline(y=70, line_dash="dash", line_color="#ef4444", row=2, col=1)
-                    fig_hist.add_hline(y=30, line_dash="dash", line_color="#10b981", row=2, col=1)
-                    
-                    # Dark Theme Style
-                    fig_hist.update_layout(
-                        height=650,
-                        template="plotly_dark",
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        plot_bgcolor='rgba(0,0,0,0.05)',
-                        xaxis_rangeslider_visible=False,
-                        margin=dict(t=50, b=50, l=50, r=50),
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                    )
-                    
-                    st.plotly_chart(fig_hist, use_container_width=True)
-                    
-                    # 4. Signal Summary Table & KPIs (Consistent with First Trigger Logic)
-                    if not filtered_signals.empty:
-                        st.write("### 📜 Signal History Summary (First Trigger)")
-                        
-                        # KPIs for Signal Counts
-                        kpi_buy = len(filtered_signals[filtered_signals['display_signal'] == 'BUY / BREAKOUT'])
-                        kpi_sell = len(filtered_signals[filtered_signals['display_signal'] == 'SELL / WARNING'])
-                        kpi_pb = len(filtered_signals[filtered_signals['display_signal'] == 'PULLBACK / PIN BAR'])
-                        kpi_mom = len(filtered_signals[filtered_signals['display_signal'] == 'MOMENTUM / VOL'])
-                        
-                        mk1, mk2, mk3, mk4 = st.columns(4)
-                        mk1.metric("Buy Triggers", kpi_buy)
-                        mk2.metric("Sell Triggers", kpi_sell)
-                        mk3.metric("Pullback Triggers", kpi_pb)
-                        mk4.metric("Momentum Triggers", kpi_mom)
-                        
-                        # Summary Table
-                        display_history = filtered_signals[['signal_date_str', 'display_signal', 'signal', 'score', 'close_price', 'rsi', 'source']].copy()
-                        display_history.columns = ['Date', 'Category', 'Raw Signal', 'Score', 'Price', 'RSI', 'Source']
-                        st.dataframe(display_history.sort_values('Date', ascending=False), use_container_width=True)
-                else:
-                    st.error(f"ไม่สามารถดึงข้อมูลราคาของ {sel_hist_ticker} ได้")
-    else:
-        st.info("ℹ️ ยังไม่มีข้อมูลการสแกนในระบบ (กรุณากด Run SET100 Batch Scan หรือรอระบบ Auto Scan)")
-
-with main_tabs[7]: # Market Bottom (WVF)
-    try:
-        st.subheader("🌋 Market Bottom Analysis (Williams Vix Fix)")
-        st.info("🌋 **Williams Vix Fix (WVF):** เครื่องมือจับจุดกลับตัวที่ฐาน (Market Bottom) โดยวัดความผันผวนของราคาเทียบกับ High ในรอบ Lookback หาก WVF พุ่งทะลุ Upper Bollinger Band จะเกิดสัญญาณ Climax Spike")
-        
-        # 1. WVF Control Panel
-        with st.expander("⚙️ WVF Parameters & Control Panel", expanded=False):
-            c1, c2, c3, c4, c5 = st.columns(5)
-            wvf_lookback = c1.number_input("Lookback Period", 10, 100, 22)
-            wvf_bb_len = c2.number_input("BB Length", 10, 100, 20)
-            
-            # WVF Sensitivity Level (Maps to BB StdDev Multiplier)
-            sensitivity_options = {
-                "High Sensitivity (BB StdDev = 1.2)": 1.2,
-                "Medium Sensitivity (BB StdDev = 1.5)": 1.5,
-                "Strict Climax (BB StdDev = 2.0)": 2.0
-            }
-            wvf_sensitivity = c3.selectbox("Sensitivity Level", list(sensitivity_options.keys()), index=1)
-            wvf_bb_mult = sensitivity_options[wvf_sensitivity]
-            
-            wvf_percentile = c4.slider("Percentile High Threshold", 0.5, 0.99, 0.85, 0.05)
-            
-            # Historical Scan Period
-            scan_range_options = {
-                "วันล่าสุด (Latest Day)": 1,
-                "ย้อนหลัง 5 วันทำการ": 5,
-                "ย้อนหลัง 20 วันทำการ (1 เดือน)": 20,
-                "เลือกวันที่เจาะจง (Custom Date)": 0
-            }
-            wvf_scan_mode = c5.selectbox("ช่วงเวลาสแกน", list(scan_range_options.keys()))
-            
-            wvf_scan_days = scan_range_options[wvf_scan_mode]
-            wvf_target_date = None
-            if wvf_scan_mode == "เลือกวันที่เจาะจง (Custom Date)":
-                wvf_target_date = st.date_input("เลือกวันที่ต้องการสแกน", datetime.now(SET_TZ).date())
-            
-            wvf_scan_btn = st.button("🚀 Run WVF Market Scan", type="primary", use_container_width=True)
-            
-            # Additional Visualization Toggles
-            st.divider()
-            col_v1, col_v2 = st.columns(2)
-            show_silent_accum = col_v1.checkbox("แสดงสัญญาณ Silent Accumulation บนกราฟ", value=True)
-            wvf_panel_ratio = col_v2.slider("ปรับความสูงพาเนล WVF", 0.15, 0.6, 0.35, 0.05)
-
-        # 2. WVF Scanner Table
-        st.write(f"### 🔍 WVF Bottom Climax Scanner ({wvf_scan_mode})")
-        
-        # Robust Ticker Loading
-        if 'set100_tickers' not in st.session_state or not st.session_state['set100_tickers']:
-            try:
-                with open('tickers_config.json', 'r') as f:
-                    config = json.load(f)
-                    st.session_state['set100_tickers'] = config.get('set100', [])
-                if not st.session_state['set100_tickers']:
-                    raise ValueError("Empty ticker list")
-            except Exception:
-                # Fallback to a solid list of SET100/Blue-chip stocks
-                st.session_state['set100_tickers'] = [
-                    "ADVANC.BK", "AOT.BK", "AWC.BK", "BANPU.BK", "BBL.BK", "BCH.BK", "BCP.BK", "BCPG.BK", "BDMS.BK", "BEM.BK",
-                    "BGRIM.BK", "BH.BK", "BJC.BK", "BTS.BK", "CBG.BK", "CENTEL.BK", "CHG.BK", "CK.BK", "CKP.BK", "COM7.BK",
-                    "CPALL.BK", "CPF.BK", "CPN.BK", "CRC.BK", "DELTA.BK", "DOHOME.BK", "EA.BK", "EGCO.BK", "GLOBAL.BK", "GPSC.BK",
-                    "GULF.BK", "GUNKUL.BK", "HANA.BK", "HMPRO.BK", "INTUCH.BK", "IRPC.BK", "IVL.BK", "JMART.BK", "JMT.BK", "KBANK.BK",
-                    "KCE.BK", "KEX.BK", "KKP.BK", "KTB.BK", "KTC.BK", "LH.BK", "MINT.BK", "MTC.BK", "OR.BK", "OSP.BK",
-                    "PLANB.BK", "PRM.BK", "PTG.BK", "PTT.BK", "PTTEP.BK", "PTTGC.BK", "RATCH.BK", "RCL.BK", "SAWAD.BK", "SCB.BK",
-                    "SCC.BK", "SCGP.BK", "STA.BK", "STARK.BK", "STEC.BK", "STGT.BK", "TCAP.BK", "THANI.BK", "TIDLOR.BK", "TIPH.BK",
-                    "TISCO.BK", "TOP.BK", "TRUE.BK", "TTB.BK", "TU.BK", "VGI.BK", "WHA.BK"
-                ]
-
-        tickers = st.session_state['set100_tickers']
-        
-        # Results container
-        wvf_results = []
-        
-        if wvf_scan_btn:
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            for i, ticker in enumerate(tickers):
-                status_text.text(f"Scanning {ticker}...")
-                df_wvf = get_stock_data(ticker)
-                if df_wvf is not None and len(df_wvf) > wvf_lookback:
-                    df_wvf = calculate_wvf(df_wvf, wvf_lookback, wvf_bb_len, wvf_bb_mult, wvf_percentile)
-                    
-                    # Logic for Historical Scan
-                    if wvf_target_date:
-                        # Specific date check
-                        target_dt = pd.to_datetime(wvf_target_date).date()
-                        matches = df_wvf[df_wvf.index.date == target_dt]
-                        if not matches.empty and matches.iloc[0]['Is_WVF_Spike']:
-                            row = matches.iloc[0]
-                            wvf_results.append({
-                                'Ticker': ticker,
-                                'Signal Date': row.name.strftime('%Y-%m-%d'),
-                                'Days Ago': (datetime.now(SET_TZ).date() - row.name.date()).days,
-                                'Price': row['Close'],
-                                'WVF Value': round(row['WVF'], 2),
-                                'Upper BB': round(row['WVF_Upper'], 2),
-                                'Signal': '🌋 BOTTOM CLIMAX'
-                            })
-                    else:
-                        # Range check (Latest, 5 days, 20 days)
-                        recent_df = df_wvf.tail(wvf_scan_days)
-                        spikes = recent_df[recent_df['Is_WVF_Spike']]
-                        
-                        for date, row in spikes.iterrows():
-                            wvf_results.append({
-                                'Ticker': ticker,
-                                'Signal Date': date.strftime('%Y-%m-%d'),
-                                'Days Ago': (datetime.now(SET_TZ).date() - date.date()).days,
-                                'Price': row['Close'],
-                                'WVF Value': round(row['WVF'], 2),
-                                'Upper BB': round(row['WVF_Upper'], 2),
-                                'Signal': '🌋 BOTTOM CLIMAX'
-                            })
-                            
-                progress_bar.progress((i + 1) / len(tickers))
-            
-            status_text.empty()
-            progress_bar.empty()
-            
-            if wvf_results:
-                st.session_state['wvf_scan_results'] = pd.DataFrame(wvf_results)
-                st.success(f"พบสัญญาณ WVF Climax ทั้งหมด {len(wvf_results)} จุด ในช่วงเวลาที่เลือก!")
-            else:
-                st.session_state['wvf_scan_results'] = pd.DataFrame()
-                st.info(f"ไม่พบหุ้นที่เกิดสัญญาณ WVF Climax ในช่วง {wvf_scan_mode}")
-
-        # Display Scanner Table
-        if 'wvf_scan_results' in st.session_state and not st.session_state['wvf_scan_results'].empty:
-            # Sort by Date descending
-            display_df = st.session_state['wvf_scan_results'].sort_values('Signal Date', ascending=False)
-            st.dataframe(display_df, use_container_width=True)
-            
-        # Unified Ticker Selectbox with Prioritization
-        signaled_tickers = []
-        if 'wvf_scan_results' in st.session_state and not st.session_state['wvf_scan_results'].empty:
-            signaled_tickers = st.session_state['wvf_scan_results']['Ticker'].unique().tolist()
-        
-        # Build the full list: Signaled first, then the rest of SET100
-        # Ensure we don't have duplicates and preserve order
-        other_tickers = [t for t in tickers if t not in signaled_tickers]
-        sorted_tickers = signaled_tickers + other_tickers
-        
-        # Safety check: if sorted_tickers is still empty (should not happen with fallback)
-        if not sorted_tickers:
-            sorted_tickers = ["SCGP.BK", "PTT.BK", "AOT.BK", "CPALL.BK"]
-        
-        # Display name mapping
-        ticker_display_map = {t: (f"🔥 {t} (Climax Signal)" if t in signaled_tickers else t) for t in sorted_tickers}
-        
-        selected_wvf_ticker = st.selectbox(
-            "เลือกหุ้นเพื่อวิเคราะห์ (Select Ticker to Analyze):",
-            options=sorted_tickers,
-            format_func=lambda x: ticker_display_map.get(x, x),
-            key="wvf_ticker_selector"
-        )
-
-        # 3. Interactive WVF Chart
-        if selected_wvf_ticker:
-            with st.spinner(f"Loading {selected_wvf_ticker} chart..."):
-                df_chart = get_stock_data(selected_wvf_ticker)
-                if df_chart is not None and len(df_chart) > wvf_lookback:
-                    df_chart = calculate_wvf(df_chart, wvf_lookback, wvf_bb_len, wvf_bb_mult, wvf_percentile)
-                    
-                    # 1. WVF Signal Logic (Cooldown 5 days) - Calculate on full data
-                    df_chart['Is_WVF_First_Trigger'] = False
-                    last_wvf_idx = -10
-                    for i in range(len(df_chart)):
-                        if df_chart['Is_WVF_Spike'].iloc[i]:
-                            if i - last_wvf_idx >= 5:
-                                df_chart.iloc[i, df_chart.columns.get_loc('Is_WVF_First_Trigger')] = True
-                                last_wvf_idx = i
-                                
-                    # 2. Silent Accumulation Logic - Fetch from official source (Supabase)
-                    df_plot = df_chart.tail(250).copy()
-                    sa_signals = get_silent_accum_insights(ticker_filter=selected_wvf_ticker, deduplicate=False)
-                    
-                    # Map Silent Accum signals to plot data
-                    df_plot['Is_Silent_Accum'] = False
-                    if sa_signals is not None and not sa_signals.empty:
-                        sig_dates = pd.to_datetime(sa_signals['signal_date']).dt.date.unique().tolist()
-                        df_plot_dates = df_plot.index.date
-                        marker_mask = [d in sig_dates for d in df_plot_dates]
-                        df_plot.loc[marker_mask, 'Is_Silent_Accum'] = True
-                    
-                    # Signal Summary Caption
-                    wvf_count = df_plot['Is_WVF_First_Trigger'].sum()
-                    sa_count = df_plot['Is_Silent_Accum'].sum()
-                    st.caption(f"📊 **Signal Summary ({selected_wvf_ticker}):** พบสัญญาณ WVF Climax: `{wvf_count}` ครั้ง | พบ Silent Accum: `{sa_count}` ครั้ง (ย้อนหลัง 1 ปี)")
-                    
-                    # 3. Top-Left Overlay Legend (TradingView Style) - Showing Latest Data
-                    latest = df_plot.iloc[-1]
-                    st.markdown(f"""
-                        <div style='background-color: rgba(15, 23, 42, 0.9); padding: 12px; border-radius: 6px; border-left: 4px solid #089981; margin-bottom: 15px; font-family: sans-serif;'>
-                            <span style='color: #94a3b8; font-size: 0.85rem; font-weight: 600;'>{latest.name.strftime('%d %b %Y')}</span>
-                            <div style='margin-top: 5px; display: flex; gap: 15px; flex-wrap: wrap;'>
-                                <span style='color: white; font-size: 0.95rem;'><b>O:</b> {latest['Open']:.2f}</span>
-                                <span style='color: white; font-size: 0.95rem;'><b>H:</b> {latest['High']:.2f}</span>
-                                <span style='color: white; font-size: 0.95rem;'><b>L:</b> {latest['Low']:.2f}</span>
-                                <span style='color: white; font-size: 0.95rem;'><b>C:</b> {latest['Close']:.2f}</span>
-                                <span style='color: #00FF00; font-size: 0.95rem;'><b>WVF:</b> {latest['WVF']:.2f}</span>
+                        # Card Content
+                        r_card_html = f"""
+                        <div class="compact-card">
+                            <div class="card-header">
+                                <div class="header-left">
+                                    <div class="dot-indicator" style="background-color: {r_dot_color};"></div>
+                                    <div class="ticker-name">{row['ticker']}</div>
+                                </div>
+                                <div class="status-pill recovery">OVERSOLD</div>
+                            </div>
+                            <div class="score-container">
+                                <div class="score-label">Score</div>
+                                <div class="score-big">{int(row['score']) if pd.notna(row['score']) else 0}</div>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 4px;">
+                                <div class="signal-badge" style="background-color: {r_sig_bg}; color: {r_sig_fg};">RSI: {row['rsi']:.1f}</div>
+                                <div style="font-size: 0.75rem; font-weight: 600; color: #7c3aed;">Signal: {row['signal']}</div>
+                                <div style="font-size: 0.75rem; font-weight: 600; color: #4b5563;">Strategy: {row['strategy'] if row['strategy'] else 'N/A'}</div>
+                            </div>
+                            <div style="margin-top: 10px; padding: 6px; background-color: #fdfcff; border-radius: 8px; border: 1px dashed #ddd6fe;">
+                                {reasons_html}
+                            </div>
+                            <div class="stats-grid">
+                                <div class="stat-item"><div class="stat-lbl">RSI</div><div class="stat-val">{row['rsi']:.1f}</div></div>
+                                <div class="stat-item"><div class="stat-lbl">PRICE</div><div class="stat-val">{row['close_price']:.2f}</div></div>
+                                <div class="stat-item"><div class="stat-lbl">PIN BAR</div><div class="stat-val">{'✅' if row.get('is_pinbar') else '❌'}</div></div>
                             </div>
                         </div>
-                    """, unsafe_allow_html=True)
-
-                    # Create Subplots
-                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                                       vertical_spacing=0.03, 
-                                       row_heights=[1 - wvf_panel_ratio, wvf_panel_ratio])
+                        """
+                        # Clean HTML indentation and render
+                        clean_r_card_html = textwrap.dedent(r_card_html).strip()
+                        st.markdown(clean_r_card_html, unsafe_allow_html=True)
+                        
+                        with st.expander(f"Analysis: {row['ticker']}"):
+                            st.write(f"🔍 **เหตุผลที่ติดโผ:** {', '.join(reasons)}")
+                            if user_api_key:
+                                if st.button(f"Oversold AI Plan: {row['ticker']}", key=f"tab_oversold_btn_{row['ticker']}"):
+                                    dummy_row = {'Last Price': row['close_price'], 'Signal': row['signal'], 'Bullish Score (%)': row['score'], 'Bearish Score (%)': 0, 'Score Diff': row['score'], 'MTF Conf': 'N/A', 'MTF Score': 0, 'Relative Vol': 1.0, 'Pattern Consensus (%)': 50}
+                                    st.markdown(generate_ai_trading_plan(row['ticker'], dummy_row, user_api_key))
                     
-                    # Panel 1: Candlestick (TradingView Style Colors)
-                    fig.add_trace(go.Candlestick(
-                        x=df_plot.index,
-                        open=df_plot['Open'],
-                        high=df_plot['High'],
-                        low=df_plot['Low'],
-                        close=df_plot['Close'],
-                        name="Price",
-                        increasing_line_color='#089981', decreasing_line_color='#F23645',
-                        increasing_fillcolor='#089981', decreasing_fillcolor='#F23645',
-                        hoverinfo='none',
-                        hovertemplate=None
-                    ), row=1, col=1)
-                    
-                    # Markers for WVF First Triggers (Green Triangle)
-                    wvf_spikes = df_plot[df_plot['Is_WVF_First_Trigger']]
-                    fig.add_trace(go.Scatter(
-                        x=wvf_spikes.index,
-                        y=wvf_spikes['Low'] * 0.985,
-                        mode='markers',
-                        marker=dict(
-                            symbol='triangle-up', 
-                            size=14, 
-                            color='#00FF66', 
-                            line=dict(width=1, color='black')
-                        ),
-                        name='▲ WVF Climax Signal',
-                        hoverinfo='none',
-                        hovertemplate=None
-                    ), row=1, col=1)
-                    
-                    # Markers for Silent Accumulation (Blue Triangle) - From Official Source
-                    if show_silent_accum:
-                        sa_spikes = df_plot[df_plot['Is_Silent_Accum']]
-                        fig.add_trace(go.Scatter(
-                            x=sa_spikes.index,
-                            y=sa_spikes['Low'] * 0.97, # Offset to avoid overlap
-                            mode='markers',
-                            marker=dict(
-                                symbol='triangle-up', 
-                                size=14, 
-                                color='#FF8C00', 
-                                line=dict(width=1, color='black')
-                            ),
-                            name='▲ Silent Accum Signal',
-                            hoverinfo='none',
-                            hovertemplate=None
-                        ), row=1, col=1)
-                    
-                    # Panel 2: WVF Bars
-                    colors = ['#00FF00' if spike else '#363A45' for spike in df_plot['Is_WVF_Spike']]
-                    
-                    fig.add_trace(go.Bar(
-                        x=df_plot.index,
-                        y=df_plot['WVF'],
-                        marker_color=colors,
-                        name='WVF Value',
-                        showlegend=False,
-                        hoverinfo='none',
-                        hovertemplate=None
-                    ), row=2, col=1)
-                    
-                    # Upper BB Line on Panel 2
-                    fig.add_trace(go.Scatter(
-                        x=df_plot.index,
-                        y=df_plot['WVF_Upper'],
-                        line=dict(color='rgba(173, 255, 47, 0.7)', width=1.5, dash='dash'), 
-                        name='Upper BB (Threshold)',
-                        hoverinfo='none',
-                        hovertemplate=None
-                    ), row=2, col=1)
-                    
-                    # Calculate default range (last 6 months)
-                    last_date = df_plot.index[-1]
-                    start_date_6m = last_date - pd.DateOffset(months=6)
-                    
-                    # Formatting & Range Selector
-                    fig.update_layout(
-                        height=800,
-                        template='plotly_dark',
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        plot_bgcolor='rgba(0,0,0,0)',
-                        xaxis_rangeslider_visible=False,
-                        margin=dict(l=10, r=10, t=50, b=10),
-                        showlegend=True,
-                        legend=dict(
-                            orientation="h",
-                            yanchor="bottom",
-                            y=1.12,          # Move above chart area
-                            xanchor="right",
-                            x=0.98           # Align to the right per directive
-                        ),
-                        hovermode="x", # Spike line capture enabled, but Hover Box suppressed by trace settings
-                        dragmode='pan'
-                    )
-                    
-                    # Vertical Crosshair (Spike lines) across both subplots (100% Sync)
-                    fig.update_xaxes(
-                        showspikes=True,
-                        spikemode='across',
-                        spikesnap='cursor',
-                        spikethickness=1,
-                        spikecolor='gray',
-                        spikedash='dash',
-                        showline=True,
-                        matches='x'
-                    )
-                    
-                    # X-Axis Enhancements: Range Selector & Range Breaks
-                    fig.update_xaxes(
-                        rangebreaks=[dict(bounds=["sat", "mon"])], # Hide weekends
-                        showgrid=True,
-                        gridcolor='rgba(128, 128, 128, 0.15)',
-                        rangeselector=dict(
-                            buttons=list([
-                                dict(count=1, label="1M", step="month", stepmode="backward"),
-                                dict(count=3, label="3M", step="month", stepmode="backward"),
-                                dict(count=6, label="6M", step="month", stepmode="backward"),
-                                dict(count=1, label="1Y", step="year", stepmode="backward"),
-                                dict(step="all", label="ALL")
-                            ]),
-                            bgcolor="rgba(54, 58, 69, 0.8)",
-                            activecolor="#089981",
-                            font=dict(size=11),
-                            y=1.02,          # Align with top edge of chart
-                            x=0.01
-                        ),
-                        range=[start_date_6m, last_date], # Default to 6M
-                        row=1, col=1
-                    )
-                    
-                    # Ensure spikes and grid on row 2
-                    fig.update_xaxes(
-                        showspikes=True,
-                        spikemode='across',
-                        spikesnap='cursor',
-                        spikethickness=1,
-                        spikecolor='gray',
-                        spikedash='dash',
-                        showline=True,
-                        showgrid=True, 
-                        gridcolor='rgba(128, 128, 128, 0.15)', 
-                        row=2, col=1
-                    )
-                    
-                    # Invert Y-axis for WVF Panel & Enable Scaling
-                    fig.update_yaxes(
-                        autorange="reversed", 
-                        fixedrange=False, # Enable Y-axis scaling/dragging
-                        showgrid=True, 
-                        gridcolor='rgba(128, 128, 128, 0.15)',
-                        zeroline=True,
-                        showspikes=True,
-                        spikemode='across',
-                        spikesnap='cursor',
-                        spikethickness=1,
-                        spikecolor='gray',
-                        spikedash='dash',
-                        row=2, col=1
-                    )
-                    fig.update_yaxes(
-                        fixedrange=False, 
-                        showgrid=True, 
-                        gridcolor='rgba(128, 128, 128, 0.15)', 
-                        showspikes=True,
-                        spikemode='across',
-                        spikesnap='cursor',
-                        spikethickness=1,
-                        spikecolor='gray',
-                        spikedash='dash',
-                        row=1, col=1
-                    )
-                    
-                    st.plotly_chart(fig, use_container_width=True, config={
-                        'scrollZoom': True, 
-                        'responsive': True,
-                        'displayModeBar': False
-                    })
+                    st.divider()
+                    st.subheader("📋 ตารางสรุปหุ้น Oversold (Summary Table)")
+                    summary_cols = ['ticker', 'rsi', 'close_price', 'signal', 'strategy', 'source', 'scanned_at']
+                    st.dataframe(oversold_df[summary_cols].rename(columns={
+                        'ticker': 'Ticker',
+                        'rsi': 'RSI',
+                        'close_price': 'Price',
+                        'signal': 'Signal',
+                        'strategy': 'Strategy',
+                        'source': 'Source',
+                        'scanned_at': 'Scanned At'
+                    }), use_container_width=True)
                 else:
-                    st.error(f"ไม่สามารถโหลดข้อมูลของ {selected_wvf_ticker} ได้")
-
-    except Exception as e:
-        st.error(f"เกิดข้อผิดพลาดในหน้า WVF Bottom Analysis: {e}")
-
-with main_tabs[8]: # WVF Strategy Backtest & Optimizer
-    try:
-        st.subheader("🧪 WVF Strategy Backtest & Grid Search Optimizer")
-        st.info("🧪 **Backtest Engine:** ทดสอบย้อนหลังและหาค่าพารามิเตอร์ที่เหมาะสมที่สุด (Optimization) สำหรับกลยุทธ์ WVF Bottom Climax โดยไม่มี Look-ahead bias")
-        
-        # 1. Selection & Parameters
-        with st.expander("⚙️ Backtest Settings & Optimizer Grid", expanded=True):
-            col_bt1, col_bt2, col_bt3 = st.columns(3)
-            
-            with col_bt1:
-                st.markdown("### 📊 Asset & Capital")
-                bt_ticker = st.selectbox("Select Stock for Backtest", st.session_state.get('set100_tickers', ["ADVANC.BK"]), key="bt_ticker")
-                initial_cap = st.number_input("Initial Capital (THB)", 10000, 1000000, 100000, 10000)
-                comm_rate = st.number_input("Commission (%)", 0.0, 1.0, 0.157, 0.01) / 100
-                slip_rate = st.number_input("Slippage (%)", 0.0, 1.0, 0.10, 0.01) / 100
-                
-            with col_bt2:
-                st.markdown("### 🌋 WVF Parameters")
-                lookback_range = st.slider("Lookback Period Range", 10, 60, (20, 30), 2)
-                bb_mult_range = st.slider("BB StdDev Range", 1.0, 3.0, (1.5, 2.5), 0.25)
-                st.divider()
-                st.markdown("### 🔍 Entry Filters")
-                use_trend_filter = st.checkbox("Enable Trend Filter (Price > EMA)", value=True)
-                ema_trend_val = st.number_input("EMA Period", 20, 250, 200)
-                
-            with col_bt3:
-                st.markdown("### 🚪 Exit Strategy")
-                exit_choice = st.selectbox("Exit Rule", [
-                    "StopLoss_TakeProfit", 
-                    "RSI_Overbought", 
-                    "Trailing_Stop",
-                    "Fixed Holding Days",
-                    "Indicator Exit (RSI/BB)"
-                ])
-                
-                if exit_choice == "Fixed Holding Days":
-                    exit_val = st.slider("Days to Hold", 1, 30, 10)
-                    exit_type = 'days'
-                elif exit_choice == "StopLoss_TakeProfit":
-                    tp = st.slider("Take Profit (%)", 1.0, 30.0, 10.0) / 100
-                    sl = st.slider("Stop Loss (%)", 1.0, 20.0, 5.0) / 100
-                    exit_type = 'StopLoss_TakeProfit'
-                    exit_val = (tp, sl) # For backward compat in code if needed
-                elif exit_choice == "RSI_Overbought":
-                    exit_val = st.slider("RSI Exit Level", 50, 90, 65)
-                    exit_type = 'RSI_Overbought'
-                elif exit_choice == "Trailing_Stop":
-                    exit_val = st.slider("ATR Multiplier", 1.0, 5.0, 2.0, 0.5)
-                    exit_type = 'Trailing_Stop'
-                else:
-                    exit_val = 0
-                    exit_type = 'indicator_exit'
-
-            st.divider()
-            col_btn1, col_btn2 = st.columns(2)
-            run_bt = col_btn1.button("🚀 Run Single Backtest", use_container_width=True, type="primary")
-            run_opt = col_btn2.button("🔍 Run Grid Search Optimizer", use_container_width=True)
-
-        # 2. Execution Logic
-        if run_bt or run_opt:
-            df_bt = get_stock_data(bt_ticker)
-            if df_bt is not None and not df_bt.empty:
-                if run_bt:
-                    params = {
-                        'initial_capital': initial_cap,
-                        'commission': comm_rate,
-                        'slippage': slip_rate,
-                        'lookback': lookback_range[0] if isinstance(lookback_range, tuple) else lookback_range,
-                        'bb_mult': bb_mult_range[0] if isinstance(bb_mult_range, tuple) else bb_mult_range,
-                        'use_trend_filter': use_trend_filter,
-                        'ema_trend_period': ema_trend_val,
-                        'exit_type': exit_type,
-                        'exit_value': exit_val if exit_type in ['days', 'RSI_Overbought', 'Trailing_Stop'] else 0
-                    }
-                    
-                    # Add specific params for the new exit logic
-                    if exit_type == 'StopLoss_TakeProfit':
-                        params['take_profit'] = tp
-                        params['stop_loss'] = sl
-                    elif exit_type == 'RSI_Overbought':
-                        params['rsi_exit'] = exit_val
-                    elif exit_type == 'Trailing_Stop':
-                        params['atr_mult'] = exit_val
-                    
-                    with st.spinner("Running backtest..."):
-                        results = backtest_engine.run_wvf_backtest(df_bt, params)
-                    
-                    if results:
-                        summary = results['summary']
-                        # A. Metrics Cards
-                        st.write("### 📈 Performance Summary")
-                        m1, m2, m3, m4, m5 = st.columns(5)
-                        m1.metric("Net Profit", f"{summary.get('Net Profit (%)', 0)}%")
-                        m2.metric("Win Rate", f"{summary.get('Win Rate (%)', 0)}%")
-                        m3.metric("Max Drawdown", f"{summary.get('Max Drawdown (%)', 0)}%")
-                        m4.metric("Sharpe Ratio", summary.get('Sharpe Ratio', 0))
-                        m5.metric("Total Trades", summary.get('Total Trades', 0))
-                        
-                        # B. Equity Curve
-                        st.write("### 📊 Equity Curve")
-                        fig_equity = go.Figure()
-                        fig_equity.add_trace(go.Scatter(x=results['equity_curve'].index, y=results['equity_curve']['Equity'], name='Strategy Equity', line=dict(color='#00FF66')))
-                        fig_equity.update_layout(template='plotly_dark', height=400, margin=dict(l=10, r=10, t=10, b=10))
-                        st.plotly_chart(fig_equity, use_container_width=True)
-                        
-                        # C. Trade Log
-                        st.write("### 📜 Trade Execution Log")
-                        st.dataframe(results['trade_log'], use_container_width=True)
-                        csv_bt = results['trade_log'].to_csv(index=False).encode('utf-8')
-                        st.download_button("📥 Download Trade Log (CSV)", csv_bt, f"trades_{bt_ticker}.csv", "text/csv")
-                
-                elif run_opt:
-                    # Setup Grid based on user choices
-                    grid = {
-                        'lookback': list(range(lookback_range[0], lookback_range[1] + 1, 2)),
-                        'bb_mult': list(np.arange(bb_mult_range[0], bb_mult_range[1] + 0.1, 0.25)),
-                        'use_trend_filter': [use_trend_filter],
-                        'ema_trend_period': [ema_trend_val],
-                        'exit_type': [exit_type]
-                    }
-                    
-                    if exit_type == 'StopLoss_TakeProfit':
-                        grid['stop_loss'] = [0.03, 0.05, 0.07]
-                        grid['take_profit'] = [0.08, 0.12, 0.15]
-                    elif exit_type == 'RSI_Overbought':
-                        grid['rsi_exit'] = [60, 65, 70]
-                    elif exit_type == 'Trailing_Stop':
-                        grid['atr_mult'] = [1.5, 2.0, 2.5, 3.0]
-                    else:
-                        grid['exit_value'] = [exit_val]
-                    
-                    with st.spinner(f"Optimizing strategy..."):
-                        opt_results = backtest_engine.optimize_wvf_strategy(df_bt, grid)
-                    
-                    if opt_results is not None and not opt_results.empty:
-                        st.write("### 🏆 Optimization Results (Ranked by Sharpe)")
-                        st.dataframe(opt_results.head(10), use_container_width=True)
-                        
-                        best = opt_results.iloc[0]
-                        st.success(f"✅ Best Parameters: Sharpe={best['Sharpe']} | Profit: {best['Net Profit (%)']}% | Trades: {best['Trades']}")
-                    else:
-                        st.warning("⚠️ No trades generated with the given parameter grid.")
+                    st.info("ℹ️ ยังไม่พบหุ้น Oversold (RSI <= 35)")
             else:
-                st.error("ไม่สามารถโหลดข้อมูลหุ้นสำหรับการทดสอบได้ (Yahoo Finance Limit or Connection Issue)")
-                if st.button("🔄 Try Fetching Again"):
-                    st.cache_data.clear()
-                    st.rerun()
-                
-    except Exception as e:
-        st.error(f"เกิดข้อผิดพลาดในระบบ Backtest: {e}")
+                st.info("ℹ️ ยังไม่มีข้อมูลการสแกนในระบบ (กรุณากด Run SET100 Batch Scan หรือรอระบบ Auto Scan)")
+        except Exception as e:
+            st.error(f"เกิดข้อผิดพลาดใน Unified Scanner: {e}")
 
-with main_tabs[9]: # Advanced Tools / More Features
-    st.info("🛠️ Advanced Tools & Strategy Builder")
-    st.caption("⚙️ **Advanced Features:** รวมเครื่องมือวิเคราะห์เชิงลึก เช่น การปรับจูน Parameter ด้วย AI, ระบบทดสอบย้อนหลัง (Backtest) และห้องทดลองรูปแบบราคา (Pattern Lab)")
+elif main_category == "🌋 Market Insights & Analytics":
+    sub_tabs = st.tabs(["🌋 WVF & Silent Accum Analysis", "📊 Market Breadth & Regime"])
     
-    # Sub-tabs for Advanced Tools
-    adv_tabs = st.tabs(["⚙️ Strategy Builder", "📈 Performance Dashboard", "🔮 Pattern Lab"])
-    
-    with adv_tabs[0]: # Strategy Builder
-        st.subheader("🛠 Quant Strategy Builder")
-        st.caption("🔧 **Strategy Builder:** ปรับแต่งเงื่อนไขการซื้อขายด้วยตัวเอง หรือให้ AI ช่วยคำนวณค่าที่เหมาะสมที่สุด (Optimizer)")
-        
-        # Initialize AI Optimization values in session state
-        if 'ai_params' not in st.session_state:
-            st.session_state['ai_params'] = None
-        
-        if 'stock_list' not in st.session_state:
-            st.session_state['stock_list'] = ["KTC.BK", "AMATA.BK", "RCL.BK", "CPF.BK"]
-        
-        col_data, col_ai = st.columns(2)
-        with col_data:
-            st.markdown("### 📥 Data Management")
-            new_ticker = st.text_input("➕ Add Ticker", "", key="adv_add_ticker").upper()
-            if new_ticker:
-                if not new_ticker.endswith(".BK") and "." not in new_ticker: new_ticker += ".BK"
-                if new_ticker not in st.session_state['stock_list']:
-                    st.session_state['stock_list'].append(new_ticker)
-            selected_ticker = st.selectbox("Select Stock", st.session_state['stock_list'], key="adv_select_ticker")
-            fetch_btn = st.button("🚀 Fetch Data", type="primary", use_container_width=True, key="adv_fetch_btn")
-        
-        if fetch_btn:
-            with st.spinner("Downloading..."):
-                df_raw_new = get_stock_data(selected_ticker)
-                if df_raw_new is not None:
-                    st.session_state['df_raw'] = df_raw_new
-                    st.session_state['active_ticker'] = selected_ticker
-                    st.rerun()
-                else:
-                    st.error("Failed to load data.")
-        
-        with col_ai:
-            st.markdown("### 🤖 AI Strategy Optimizer")
-            if 'df_raw' in st.session_state:
-                if st.button("Run AI Optimizer", use_container_width=True, key="adv_ai_btn"):
-                    if not user_api_key:
-                        st.warning("Please enter Google API Key in the sidebar.")
-                    else:
-                        current_df = calculate_quant_indicators(st.session_state['df_raw'], 14, 5, 20)
-                        _, current_stats, _ = run_backtest(current_df, 30, 70, 1.2)
+    with sub_tabs[0]: # 🌋 WVF & Silent Accum Analysis
+        try:
+            st.subheader("🌋 Market Bottom Analysis (Williams Vix Fix)")
+            st.info("🌋 **Williams Vix Fix (WVF):** เครื่องมือจับจุดกลับตัวที่ฐาน (Market Bottom) โดยวัดความผันผวนของราคาเทียบกับ High ในรอบ Lookback หาก WVF พุ่งทะลุ Upper Bollinger Band จะเกิดสัญญาณ Climax Spike")
+            
+            # 1. WVF Control Panel
+            with st.expander("⚙️ WVF Parameters & Control Panel", expanded=False):
+                c1, c2, c3, c4, c5 = st.columns(5)
+                wvf_lookback = c1.number_input("Lookback Period", 10, 100, 22)
+                wvf_bb_len = c2.number_input("BB Length", 10, 100, 20)
+                
+                sensitivity_options = {
+                    "High Sensitivity (BB StdDev = 1.2)": 1.2,
+                    "Medium Sensitivity (BB StdDev = 1.5)": 1.5,
+                    "Strict Climax (BB StdDev = 2.0)": 2.0
+                }
+                wvf_sensitivity = c3.selectbox("Sensitivity Level", list(sensitivity_options.keys()), index=1)
+                wvf_bb_mult = sensitivity_options[wvf_sensitivity]
+                
+                wvf_percentile = c4.slider("Percentile High Threshold", 0.5, 0.99, 0.85, 0.05)
+                
+                scan_range_options = {
+                    "วันล่าสุด (Latest Day)": 1,
+                    "ย้อนหลัง 5 วันทำการ": 5,
+                    "ย้อนหลัง 20 วันทำการ (1 เดือน)": 20,
+                    "เลือกวันที่เจาะจง (Custom Date)": 0
+                }
+                wvf_scan_mode = c5.selectbox("ช่วงเวลาสแกน", list(scan_range_options.keys()))
+                
+                wvf_scan_days = scan_range_options[wvf_scan_mode]
+                wvf_target_date = None
+                if wvf_scan_mode == "เลือกวันที่เจาะจง (Custom Date)":
+                    wvf_target_date = st.date_input("เลือกวันที่ต้องการสแกน", datetime.now(SET_TZ).date())
+                
+                wvf_scan_btn = st.button("🚀 Run WVF Market Scan", type="primary", use_container_width=True)
+                
+                st.divider()
+                col_v1, col_v2 = st.columns(2)
+                show_silent_accum = col_v1.checkbox("แสดงสัญญาณ Silent Accumulation บนกราฟ", value=True)
+                wvf_panel_ratio = col_v2.slider("ปรับความสูงพาเนล WVF", 0.15, 0.6, 0.35, 0.05)
+
+            # 2. WVF Scanner Table
+            st.write(f"### 🔍 WVF Bottom Climax Scanner ({wvf_scan_mode})")
+            
+            tickers = SET100_TICKERS
+            wvf_results = []
+            
+            if wvf_scan_btn:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                for i, ticker in enumerate(tickers):
+                    status_text.text(f"Scanning {ticker}...")
+                    df_wvf = get_stock_data(ticker)
+                    if df_wvf is not None and len(df_wvf) > wvf_lookback:
+                        df_wvf = calculate_wvf(df_wvf, wvf_lookback, wvf_bb_len, wvf_bb_mult, wvf_percentile)
                         
-                        with st.status("AI is analyzing...", expanded=True) as status:
-                            ai_rec = get_ai_optimization(
-                                st.session_state['active_ticker'], 
-                                current_stats, 
-                                None, 
-                                {"rsi_p": 14, "rsi_b": 30, "rsi_s": 70, "ema_f": 5, "ema_s": 20, "rv_m": 1.2},
-                                user_api_key
-                            )
-                        if ai_rec:
-                            st.session_state['ai_params'] = ai_rec
-                            status.update(label="✅ AI Optimization Complete!", state="complete")
-                            st.info(f"💡 AI Recommendation: {ai_rec['reasoning']}")
+                        if wvf_target_date:
+                            target_dt = pd.to_datetime(wvf_target_date).date()
+                            matches = df_wvf[df_wvf.index.date == target_dt]
+                            if not matches.empty and matches.iloc[0]['Is_WVF_Spike']:
+                                row = matches.iloc[0]
+                                wvf_results.append({
+                                    'Ticker': ticker,
+                                    'Signal Date': row.name.strftime('%Y-%m-%d'),
+                                    'Days Ago': (datetime.now(SET_TZ).date() - row.name.date()).days,
+                                    'Price': row['Close'],
+                                    'WVF Value': round(row['WVF'], 2),
+                                    'Upper BB': round(row['WVF_Upper'], 2),
+                                    'Signal': '🌋 BOTTOM CLIMAX'
+                                })
                         else:
-                            status.update(label="❌ AI Optimization Failed", state="error")
-            else:
-                st.info("Select a stock and fetch data to use AI Optimizer.")
-
-        st.divider()
-        with st.form("adv_strategy_params"):
-            st.subheader("⚙️ Buy/Sell Parameters")
-            p = st.session_state['ai_params'] if st.session_state['ai_params'] else {}
-            
-            c1, c2, c3 = st.columns(3)
-            rsi_p = c1.slider("RSI Period", 5, 30, p.get('rsi_p', 14))
-            rsi_b = c2.slider("Buy Threshold (RSI <=)", 10, 80, p.get('rsi_b', 50))
-            rsi_s = c3.slider("Sell Threshold (RSI >=)", 40, 90, p.get('rsi_s', 70))
-            
-            c4, c5, c6 = st.columns(3)
-            ema_f = c4.number_input("Fast EMA", 5, 50, p.get('ema_f', 10))
-            ema_s = c5.number_input("Slow EMA", 10, 200, p.get('ema_s', 50))
-            rv_m = c6.slider("Min Rel. Volume", 1.0, 3.0, p.get('rv_m', 1.5), 0.1)
-            
-            st.markdown("### 🔍 Scanner Settings")
-            min_sim = st.slider("Min Similarity Threshold (%)", 50, 95, 80)
-            scanner_mode = st.radio("Scanner Mode", ["Bullish (Breakout)", "Bearish (Danger Zone)"], horizontal=True)
-            
-            apply_btn = st.form_submit_button("🔄 Apply & Backtest", use_container_width=True)
-
-    with adv_tabs[1]: # Performance Dashboard
-        if 'df_raw' in st.session_state:
-            df = calculate_quant_indicators(st.session_state['df_raw'], rsi_p, ema_f, ema_s)
-            trade_log, stats, equity_curve = run_backtest(df, rsi_b, rsi_s, rv_m)
-            
-            st.title(f"📈 {st.session_state['active_ticker']} Strategy Station")
-            
-            # Volatility Guard Alert
-            atr_now = df['ATR'].iloc[-1]
-            atr_avg5 = df['ATR_Avg_5'].iloc[-1]
-            if atr_now > (atr_avg5 * 1.2):
-                st.warning(f"⚠️ **High Volatility Alert**: ATR ({atr_now:.2f}) is 20%+ above 5-day average ({atr_avg5:.2f}). Exercise caution!")
-            
-            # 1. Performance Metrics
-            if stats and 'Total Return (%)' in stats:
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Total Return", f"{stats['Total Return (%)']:.2f}%")
-                m2.metric("Win Rate", f"{stats['Win Rate (%)']:.1f}%")
-                m3.metric("Max Drawdown", f"-{stats['Max Drawdown (%)']:.2f}%", delta_color="inverse")
-                m4.metric("Total Trades", stats['Total Trades'])
-            
-            # 2. Main Chart
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-            fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price"), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df['EMA_Fast'], name=f"EMA {ema_f}", line=dict(color='orange', width=1)), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df['EMA_Slow'], name=f"EMA {ema_s}", line=dict(color='blue', width=1)), row=1, col=1)
-            if trade_log is not None:
-                fig.add_trace(go.Scatter(x=trade_log['Entry Date'], y=trade_log['Entry Price'], mode='markers', marker=dict(symbol='triangle-up', size=12, color='green'), name='Buy'), row=1, col=1)
-                fig.add_trace(go.Scatter(x=trade_log['Exit Date'], y=trade_log['Exit Price'], mode='markers', marker=dict(symbol='triangle-down', size=12, color='red'), name='Sell'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], name="RSI", line=dict(color='purple')), row=2, col=1)
-            fig.add_hline(y=rsi_s, line_dash="dash", line_color="red", row=2, col=1)
-            fig.add_hline(y=rsi_b, line_dash="dash", line_color="green", row=2, col=1)
-            fig.update_layout(height=600, template="plotly_white", xaxis_rangeslider_visible=False)
-            st.plotly_chart(fig, use_container_width=True, config={
-                'scrollZoom': False,
-                'displayModeBar': True,
-                'responsive': True
-            })
-            
-            # 3. DTW Projection Chart
-            st.subheader("🔮 Pattern Matching Projection (Next 20 Days)")
-            projections = get_dtw_projection(df)
-            if projections:
-                proj_fig = go.Figure()
-                last_40 = df['Close'].iloc[-40:]
-                proj_fig.add_trace(go.Scatter(x=list(range(-40, 0)), y=last_40.values, name="Actual Price", line=dict(color='black', width=3)))
-                colors = ['rgba(34, 197, 94, 0.6)', 'rgba(59, 130, 246, 0.6)', 'rgba(168, 85, 247, 0.6)']
-                for i, p in enumerate(projections):
-                    proj_fig.add_trace(go.Scatter(x=list(range(0, 20)), y=p['path'], name=f"Match {i+1} ({p['date_range']})", line=dict(dash='dot', color=colors[i])))
-                proj_fig.update_layout(height=400, template="plotly_white", xaxis_title="Days from Today", yaxis_title="Price")
-                st.plotly_chart(proj_fig, use_container_width=True)
-            
-            # 4. Trade Log & Equity Curve
-            c_log, c_eq = st.columns([0.6, 0.4])
-            with c_log:
-                st.subheader("📜 Detailed Trade Log")
-                if trade_log is not None:
-                    st.dataframe(trade_log.style.format({'Profit (%)': '{:.2f}%', 'Entry Price': '{:.2f}', 'Exit Price': '{:.2f}'}), use_container_width=True)
+                            recent_df = df_wvf.tail(wvf_scan_days)
+                            spikes = recent_df[recent_df['Is_WVF_Spike']]
+                            for date, row in spikes.iterrows():
+                                wvf_results.append({
+                                    'Ticker': ticker,
+                                    'Signal Date': date.strftime('%Y-%m-%d'),
+                                    'Days Ago': (datetime.now(SET_TZ).date() - date.date()).days,
+                                    'Price': row['Close'],
+                                    'WVF Value': round(row['WVF'], 2),
+                                    'Upper BB': round(row['WVF_Upper'], 2),
+                                    'Signal': '🌋 BOTTOM CLIMAX'
+                                })
+                    progress_bar.progress((i + 1) / len(tickers))
+                
+                status_text.empty()
+                progress_bar.empty()
+                
+                if wvf_results:
+                    st.session_state['wvf_scan_results'] = pd.DataFrame(wvf_results)
+                    st.success(f"พบสัญญาณ WVF Climax ทั้งหมด {len(wvf_results)} จุด!")
                 else:
-                    st.info("No trades executed with current parameters.")
-            with c_eq:
-                st.subheader("📈 Equity Growth")
-                if equity_curve is not None:
-                    eq_fig = go.Figure()
-                    eq_fig.add_trace(go.Scatter(x=equity_curve['Trade'], y=equity_curve['Equity'], fill='tozeroy', line=dict(color='green')))
-                    eq_fig.update_layout(height=350, template="plotly_white", title="Capital: 100k Base")
-                    st.plotly_chart(eq_fig, use_container_width=True)
-        else:
-            st.info("Select a stock in 'Strategy Builder' tab to see performance.")
+                    st.session_state['wvf_scan_results'] = pd.DataFrame()
+                    st.info(f"ไม่พบหุ้นที่เกิดสัญญาณ WVF Climax")
 
-    with adv_tabs[2]: # Pattern Lab
-        if 'df_raw' in st.session_state:
-            mode_label = "🚀 Pre-Breakout Pattern Scanner" if scanner_mode == "Bullish (Breakout)" else "🚩 Danger Zone Scanner"
-            st.subheader(f"{mode_label} (Last 5 Days vs History)")
-            scan_mode_val = 'bullish' if scanner_mode == "Bullish (Breakout)" else 'bearish'
-            with st.spinner(f"Scanning for historical patterns..."):
-                scan_results = get_pre_breakout_scanner(df, mode=scan_mode_val)
-            if scan_results:
-                scan_fig = make_subplots(rows=1, cols=3, subplot_titles=("Price Pattern Similarity", "Volume Flow Similarity", "Candlestick Comparison"), column_widths=[0.3, 0.3, 0.4])
-                main_color = 'green' if scan_mode_val == 'bullish' else 'red'
-                jump_color = 'lime' if scan_mode_val == 'bullish' else 'crimson'
-                scan_fig.add_trace(go.Scatter(x=list(range(5)), y=scan_results['curr_p'], name="Current Price", line=dict(color='black', width=3)), row=1, col=1)
-                scan_fig.add_trace(go.Scatter(x=list(range(5)), y=scan_results['curr_v'], name="Current Volume", line=dict(color='gray', width=3, dash='dash')), row=1, col=2)
-                best = scan_results['matches'][0]
-                scan_fig.add_trace(go.Scatter(x=list(range(5)), y=best['hist_p'], name=f"Best Match History ({pd.to_datetime(best['date']).date()})", line=dict(color=main_color, dash='dot')), row=1, col=1)
-                jump_label = f"{best['jump']:+.1f}%"
-                scan_fig.add_trace(go.Scatter(x=[4, 5], y=[best['hist_p_ext'][4], best['hist_p_ext'][5]], name="Historical Move", mode='lines+markers+text', text=["", jump_label], textposition="top center", line=dict(color=jump_color, width=5), marker=dict(size=8, color=jump_color)), row=1, col=1)
-                scan_fig.add_trace(go.Scatter(x=list(range(5)), y=best['hist_v'], name=f"Best Match Volume", line=dict(color='blue', dash='dot')), row=1, col=2)
-                curr_ohlc = scan_results['curr_ohlc']
-                scan_fig.add_trace(go.Candlestick(x=list(range(5)), open=curr_ohlc['Open'], high=curr_ohlc['High'], low=curr_ohlc['Low'], close=curr_ohlc['Close'], name="Current Candles"), row=1, col=3)
-                hist_ohlc = best['hist_ohlc_scaled']
-                scan_fig.add_trace(go.Candlestick(x=list(range(6)), open=hist_ohlc['Open'], high=hist_ohlc['High'], low=hist_ohlc['Low'], close=hist_ohlc['Close'], name="Historical Match Candles", increasing_line_color='rgba(34, 197, 94, 0.3)', decreasing_line_color='rgba(239, 68, 68, 0.3)', increasing_fillcolor='rgba(34, 197, 94, 0.1)', decreasing_fillcolor='rgba(239, 68, 68, 0.1)'), row=1, col=3)
-                scan_fig.update_layout(height=450, template="plotly_white", showlegend=True, xaxis3_rangeslider_visible=False)
-                st.plotly_chart(scan_fig, use_container_width=True)
-                st.write("### 📊 Matching Summary")
-                m_cols = st.columns(3)
-                for i, m in enumerate(scan_results['matches']):
-                    similarity = max(0, 100 - (m['dist'] * 20)) 
-                    sim_color = "green" if similarity > 80 else "orange"
-                    jump_val_color = "green" if m['jump'] > 0 else "red"
-                    with m_cols[i]:
-                        st.markdown(f"**Match #{i+1}: {pd.to_datetime(m['date']).date()}**\n- Similarity Score: :{sim_color}[{similarity:.1f}%]\n- Historical Move: :{jump_val_color}[{m['jump']:+.1f}%]")
+            if 'wvf_scan_results' in st.session_state and not st.session_state['wvf_scan_results'].empty:
+                st.dataframe(st.session_state['wvf_scan_results'].sort_values('Signal Date', ascending=False), use_container_width=True)
+            
+            # Ticker Selector
+            signaled_tickers = []
+            if 'wvf_scan_results' in st.session_state and not st.session_state['wvf_scan_results'].empty:
+                signaled_tickers = st.session_state['wvf_scan_results']['Ticker'].unique().tolist()
+            
+            sorted_tickers = signaled_tickers + [t for t in tickers if t not in signaled_tickers]
+            ticker_display_map = {t: (f"🔥 {t} (Climax Signal)" if t in signaled_tickers else t) for t in sorted_tickers}
+            
+            selected_wvf_ticker = st.selectbox("เลือกหุ้นเพื่อวิเคราะห์ (Select Ticker to Analyze):", options=sorted_tickers, format_func=lambda x: ticker_display_map.get(x, x), key="wvf_ticker_selector_new")
+
+            if selected_wvf_ticker:
+                with st.spinner(f"Loading {selected_wvf_ticker} chart..."):
+                    df_chart = get_stock_data(selected_wvf_ticker)
+                    if df_chart is not None and len(df_chart) > wvf_lookback:
+                        df_chart = calculate_wvf(df_chart, wvf_lookback, wvf_bb_len, wvf_bb_mult, wvf_percentile)
+                        
+                        # Spike First Trigger Logic
+                        df_chart['Is_WVF_First_Trigger'] = False
+                        last_wvf_idx = -10
+                        for i in range(len(df_chart)):
+                            if df_chart['Is_WVF_Spike'].iloc[i]:
+                                if i - last_wvf_idx >= 5:
+                                    df_chart.iloc[i, df_chart.columns.get_loc('Is_WVF_First_Trigger')] = True
+                                    last_wvf_idx = i
+                                    
+                        df_plot = df_chart.tail(250).copy()
+                        
+                        # Silent Accum Integration
+                        sa_insights = get_silent_accum_insights(ticker_filter=selected_wvf_ticker, deduplicate=False)
+                        df_plot['Is_Silent_Accum'] = False
+                        if sa_insights is not None and not sa_insights.empty:
+                            sig_dates = pd.to_datetime(sa_insights['signal_date']).dt.date.unique().tolist()
+                            df_plot.loc[[d.date() in sig_dates for d in df_plot.index], 'Is_Silent_Accum'] = True
+                        
+                        # --- TRADINGVIEW STYLE CHART ---
+                        latest = df_plot.iloc[-1]
+                        st.markdown(f"""
+                            <div style='background-color: rgba(15, 23, 42, 0.9); padding: 12px; border-radius: 6px; border-left: 4px solid #089981; margin-bottom: 15px;'>
+                                <span style='color: #94a3b8; font-size: 0.85rem;'>{latest.name.strftime('%d %b %Y')}</span>
+                                <div style='margin-top: 5px; display: flex; gap: 15px; color: white;'>
+                                    <span><b>O:</b> {latest['Open']:.2f}</span>
+                                    <span><b>H:</b> {latest['High']:.2f}</span>
+                                    <span><b>L:</b> {latest['Low']:.2f}</span>
+                                    <span><b>C:</b> {latest['Close']:.2f}</span>
+                                    <span style='color: #00FF00;'><b>WVF:</b> {latest['WVF']:.2f}</span>
+                                </div>
+                            </div>
+                        """, unsafe_allow_html=True)
+
+                        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[1-wvf_panel_ratio, wvf_panel_ratio])
+                        
+                        # Candlestick
+                        fig.add_trace(go.Candlestick(x=df_plot.index, open=df_plot['Open'], high=df_plot['High'], low=df_plot['Low'], close=df_plot['Close'], name="Price", increasing_line_color='#089981', decreasing_line_color='#F23645', increasing_fillcolor='#089981', decreasing_fillcolor='#F23645', hoverinfo='none'), row=1, col=1)
+                        
+                        # Markers (Size 14 Triangle-up)
+                        wvf_spikes = df_plot[df_plot['Is_WVF_First_Trigger']]
+                        fig.add_trace(go.Scatter(x=wvf_spikes.index, y=wvf_spikes['Low'] * 0.985, mode='markers', marker=dict(symbol='triangle-up', size=14, color='#00FF66', line=dict(width=1, color='black')), name='▲ WVF Climax Signal', hoverinfo='none'), row=1, col=1)
+                        
+                        if show_silent_accum:
+                            sa_spikes = df_plot[df_plot['Is_Silent_Accum']]
+                            fig.add_trace(go.Scatter(x=sa_spikes.index, y=sa_spikes['Low'] * 0.97, mode='markers', marker=dict(symbol='triangle-up', size=14, color='#FF8C00', line=dict(width=1, color='black')), name='▲ Silent Accum Signal', hoverinfo='none'), row=1, col=1)
+                        
+                        # WVF Bars
+                        colors = ['#00FF00' if spike else '#363A45' for spike in df_plot['Is_WVF_Spike']]
+                        fig.add_trace(go.Bar(x=df_plot.index, y=df_plot['WVF'], marker_color=colors, name='WVF Value', showlegend=False, hoverinfo='none'), row=2, col=1)
+                        fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['WVF_Upper'], line=dict(color='rgba(173, 255, 47, 0.7)', width=1.5, dash='dash'), name='Upper BB', hoverinfo='none'), row=2, col=1)
+                        
+                        # Layout
+                        fig.update_layout(height=800, template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=50, b=10), showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.12, xanchor="right", x=0.98), hovermode="x", dragmode='pan')
+                        fig.update_xaxes(showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikecolor='gray', spikedash='dash', matches='x', showgrid=True, gridcolor='rgba(128, 128, 128, 0.15)')
+                        fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])], rangeselector=dict(buttons=list([dict(count=1, label="1M", step="month", stepmode="backward"), dict(count=3, label="3M", step="month", stepmode="backward"), dict(count=6, label="6M", step="month", stepmode="backward"), dict(count=1, label="1Y", step="year", stepmode="backward"), dict(step="all", label="ALL")]), bgcolor="rgba(54, 58, 69, 0.8)", activecolor="#089981", y=1.02, x=0.01), range=[df_plot.index[-120], df_plot.index[-1]], row=1, col=1)
+                        fig.update_yaxes(autorange="reversed", fixedrange=False, showgrid=True, gridcolor='rgba(128, 128, 128, 0.15)', row=2, col=1)
+                        fig.update_yaxes(fixedrange=False, showgrid=True, gridcolor='rgba(128, 128, 128, 0.15)', row=1, col=1)
+                        
+                        st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'responsive': True, 'displayModeBar': False})
+        except Exception as e:
+            st.error(f"Error in WVF Analysis: {e}")
+
+    with sub_tabs[1]: # 📊 Market Breadth & Regime
+        try:
+            st.subheader(f"📊 Market Breadth: หุ้นบวก {pos_count} | หุ้นลบ {neg_count}")
+            st.caption("📈 **Market Breadth:** สรุปภาพรวมความแข็งแกร่งของตลาด SET100")
+            
+            if not batch_df.empty and 'Signal' in batch_df.columns:
+                c_m1, c_m2 = st.columns(2)
+                with c_m1:
+                    st.write("### Signal Distribution")
+                    sig_counts = batch_df['Signal'].value_counts().reset_index()
+                    sig_counts.columns = ['Signal', 'Count']
+                    st.dataframe(sig_counts, use_container_width=True, hide_index=True)
+                with c_m2:
+                    st.write("### Regime Analysis")
+                    if 'Regime' in batch_df.columns:
+                        st.info(f"Current Market Regime: **{batch_df['Regime'].iloc[0]}**")
+                    else:
+                        st.info("Regime data not available.")
+        except Exception as e:
+            st.error(f"Error in Market Breadth: {e}")
+
+elif main_category == "🧪 Quant Lab & Administration":
+    sub_tabs = st.tabs(["🧪 Backtest & Optimizer Engine", "⚙️ Admin & History Logs"])
+    
+    with sub_tabs[0]: # 🧪 Backtest & Optimizer Engine
+        try:
+            st.subheader("🧪 WVF Strategy Backtest & Grid Search Optimizer")
+            st.info("🧪 **Backtest Engine:** ทดสอบย้อนหลังและหาค่าพารามิเตอร์ที่เหมาะสมที่สุด (Optimization) สำหรับกลยุทธ์ WVF Bottom Climax โดยไม่มี Look-ahead bias")
+            
+            # 1. Selection & Parameters
+            with st.expander("⚙️ Backtest Settings & Optimizer Grid", expanded=True):
+                col_bt1, col_bt2, col_bt3 = st.columns(3)
+                
+                with col_bt1:
+                    st.markdown("### 📊 Asset & Capital")
+                    bt_ticker = st.selectbox("Select Stock for Backtest", st.session_state.get('set100_tickers', ["ADVANC.BK"]), key="bt_ticker_new")
+                    initial_cap = st.number_input("Initial Capital (THB)", 10000, 1000000, 100000, 10000)
+                    comm_rate = st.number_input("Commission (%)", 0.0, 1.0, 0.157, 0.01) / 100
+                    slip_rate = st.number_input("Slippage (%)", 0.0, 1.0, 0.10, 0.01) / 100
+                    
+                with col_bt2:
+                    st.markdown("### 🌋 WVF Parameters")
+                    lookback_range = st.slider("Lookback Period Range", 10, 60, (20, 30), 2)
+                    bb_mult_range = st.slider("BB StdDev Range", 1.0, 3.0, (1.5, 2.5), 0.25)
+                    st.divider()
+                    st.markdown("### 🔍 Entry Filters")
+                    use_trend_filter = st.checkbox("Enable Trend Filter (Price > EMA)", value=True, key="bt_trend_filter")
+                    ema_trend_val = st.number_input("EMA Period", 20, 250, 200)
+                    
+                with col_bt3:
+                    st.markdown("### 🚪 Exit Strategy")
+                    exit_choice = st.selectbox("Exit Rule", [
+                        "StopLoss_TakeProfit", 
+                        "RSI_Overbought", 
+                        "Trailing_Stop",
+                        "Fixed Holding Days",
+                        "Indicator Exit (RSI/BB)"
+                    ])
+                    
+                    if exit_choice == "Fixed Holding Days":
+                        exit_val = st.slider("Days to Hold", 1, 30, 10)
+                        exit_type = 'days'
+                    elif exit_choice == "StopLoss_TakeProfit":
+                        tp = st.slider("Take Profit (%)", 1.0, 30.0, 10.0) / 100
+                        sl = st.slider("Stop Loss (%)", 1.0, 20.0, 5.0) / 100
+                        exit_type = 'StopLoss_TakeProfit'
+                        exit_val = (tp, sl)
+                    elif exit_choice == "RSI_Overbought":
+                        exit_val = st.slider("RSI Exit Level", 50, 90, 65)
+                        exit_type = 'RSI_Overbought'
+                    elif exit_choice == "Trailing_Stop":
+                        exit_val = st.slider("ATR Multiplier", 1.0, 5.0, 2.0, 0.5)
+                        exit_type = 'Trailing_Stop'
+                    else:
+                        exit_val = 0
+                        exit_type = 'indicator_exit'
+
+                st.divider()
+                col_btn1, col_btn2 = st.columns(2)
+                run_bt = col_btn1.button("🚀 Run Single Backtest", use_container_width=True, type="primary")
+                run_opt = col_btn2.button("🔍 Run Grid Search Optimizer", use_container_width=True)
+
+            # 2. Execution Logic
+            if run_bt or run_opt:
+                df_bt = get_stock_data(bt_ticker)
+                if df_bt is not None and not df_bt.empty:
+                    if run_bt:
+                        params = {
+                            'initial_capital': initial_cap,
+                            'commission': comm_rate,
+                            'slippage': slip_rate,
+                            'lookback': lookback_range[0] if isinstance(lookback_range, tuple) else lookback_range,
+                            'bb_mult': bb_mult_range[0] if isinstance(bb_mult_range, tuple) else bb_mult_range,
+                            'use_trend_filter': use_trend_filter,
+                            'ema_trend_period': ema_trend_val,
+                            'exit_type': exit_type,
+                            'exit_value': exit_val if exit_type in ['days', 'RSI_Overbought', 'Trailing_Stop'] else 0
+                        }
+                        if exit_type == 'StopLoss_TakeProfit':
+                            params['take_profit'] = tp
+                            params['stop_loss'] = sl
+                        elif exit_type == 'RSI_Overbought':
+                            params['rsi_exit'] = exit_val
+                        elif exit_type == 'Trailing_Stop':
+                            params['atr_mult'] = exit_val
+                        
+                        with st.spinner("Running backtest..."):
+                            results = backtest_engine.run_wvf_backtest(df_bt, params)
+                        
+                        if results:
+                            summary = results['summary']
+                            st.write("### 📈 Performance Summary")
+                            m1, m2, m3, m4, m5 = st.columns(5)
+                            m1.metric("Net Profit", f"{summary.get('Net Profit (%)', 0)}%")
+                            m2.metric("Win Rate", f"{summary.get('Win Rate (%)', 0)}%")
+                            m3.metric("Max Drawdown", f"{summary.get('Max Drawdown (%)', 0)}%")
+                            m4.metric("Sharpe Ratio", summary.get('Sharpe Ratio', 0))
+                            m5.metric("Total Trades", summary.get('Total Trades', 0))
+                            
+                            st.write("### 📊 Equity Curve")
+                            fig_equity = go.Figure()
+                            fig_equity.add_trace(go.Scatter(x=results['equity_curve'].index, y=results['equity_curve']['Equity'], name='Strategy Equity', line=dict(color='#00FF66')))
+                            fig_equity.update_layout(template='plotly_dark', height=400, margin=dict(l=10, r=10, t=10, b=10))
+                            st.plotly_chart(fig_equity, use_container_width=True)
+                            
+                            st.write("### 📜 Trade Execution Log")
+                            st.dataframe(results['trade_log'], use_container_width=True)
+                            csv_bt = results['trade_log'].to_csv(index=False).encode('utf-8')
+                            st.download_button("📥 Download Trade Log (CSV)", csv_bt, f"trades_{bt_ticker}.csv", "text/csv")
+                    
+                    elif run_opt:
+                        grid = {
+                            'lookback': list(range(lookback_range[0], lookback_range[1] + 1, 2)),
+                            'bb_mult': list(np.arange(bb_mult_range[0], bb_mult_range[1] + 0.1, 0.25)),
+                            'use_trend_filter': [use_trend_filter],
+                            'ema_trend_period': [ema_trend_val],
+                            'exit_type': [exit_type]
+                        }
+                        if exit_type == 'StopLoss_TakeProfit':
+                            grid['stop_loss'] = [0.03, 0.05, 0.07]
+                            grid['take_profit'] = [0.08, 0.12, 0.15]
+                        elif exit_type == 'RSI_Overbought':
+                            grid['rsi_exit'] = [60, 65, 70]
+                        elif exit_type == 'Trailing_Stop':
+                            grid['atr_mult'] = [1.5, 2.0, 2.5, 3.0]
+                        
+                        with st.spinner(f"Optimizing strategy..."):
+                            opt_results = backtest_engine.optimize_wvf_strategy(df_bt, grid)
+                        
+                        if opt_results is not None and not opt_results.empty:
+                            st.write("### 🏆 Optimization Results (Ranked by Sharpe)")
+                            st.dataframe(opt_results.head(10), use_container_width=True)
+                            best = opt_results.iloc[0]
+                            st.success(f"✅ Best Parameters: Sharpe={best['Sharpe']} | Profit: {best['Net Profit (%)']}% | Trades: {best['Trades']}")
+                            
+                            # Add Save Button
+                            best_params_to_save = {
+                                'lookback': int(best['lookback']),
+                                'bb_mult': float(best['bb_mult']),
+                                'use_trend_filter': bool(best['use_trend_filter']),
+                                'ema_trend_period': int(best['ema_trend_period']),
+                                'exit_type': str(best['exit_type'])
+                            }
+                            # Add exit values based on type
+                            if best['exit_type'] == 'StopLoss_TakeProfit':
+                                best_params_to_save['take_profit'] = float(best['take_profit'])
+                                best_params_to_save['stop_loss'] = float(best['stop_loss'])
+                            elif best['exit_type'] == 'RSI_Overbought':
+                                best_params_to_save['rsi_exit'] = float(best['rsi_exit'])
+                            elif best['exit_type'] == 'Trailing_Stop':
+                                best_params_to_save['atr_mult'] = float(best['atr_mult'])
+                            
+                            if st.button("💾 Apply & Save these Best Parameters for Signal Engine", type="primary"):
+                                save_best_params(bt_ticker, best_params_to_save)
+                                st.success(f"🚀 Parameters for {bt_ticker} saved successfully! Signal Engine will now use these settings.")
+                else:
+                    st.error("ไม่สามารถโหลดข้อมูลหุ้นสำหรับการทดสอบได้")
+        except Exception as e:
+            st.error(f"เกิดข้อผิดพลาดในระบบ Backtest: {e}")
+
+    with sub_tabs[1]: # ⚙️ Admin & History Logs
+        try:
+            st.subheader("⚙️ Admin & History Logs")
+            st.caption("📜 **Database Persistence:** ดึงข้อมูลประวัติการสแกนและผลแพ้ชนะย้อนหลังจาก Supabase")
+            
+            if supabase:
+                with st.expander("🔍 View Saved Scan History", expanded=True):
+                    response = supabase.table("scan_results").select("*").order("id", desc=True).limit(200).execute()
+                    history_df = pd.DataFrame(response.data)
+                    if not history_df.empty:
+                        st.dataframe(history_df, use_container_width=True)
+                    else:
+                        st.info("No history records found.")
                 
                 st.divider()
-                st.subheader("✅ Scanner Accuracy Validator")
-                if st.button("🔍 Validate Scanner Accuracy", use_container_width=True, key="adv_validate_btn"):
-                    df_temp = df.copy()
-                    df_temp['Pct_Change'] = df_temp['Close'].pct_change()
-                    events = df_temp[df_temp['Pct_Change'] >= 0.05].index.tolist() if scan_mode_val == 'bullish' else df_temp[df_temp['Pct_Change'] <= -0.05].index.tolist()
-                    winning_pats = []
-                    for b_date in events:
-                        idx = df_temp.index.get_loc(b_date)
-                        if idx < 5: continue
-                        p_data = df_temp.iloc[idx-5 : idx]
-                        winning_pats.append({'price_pattern': StandardScaler().fit_transform(p_data[['Close']]).flatten(), 'vol_pattern': StandardScaler().fit_transform(p_data[['Volume']]).flatten()})
-                    with st.spinner("Validating historical signals..."):
-                        val_results = validate_scanner_accuracy(df, winning_pats, price_threshold=min_sim, vol_threshold=70.0)
-                    if val_results:
-                        s = val_results['summary']
-                        m1, m2, m3, m4, m5, m6 = st.columns(6)
-                        m1.metric("Signals", s['Total Signals'])
-                        m2.metric("Hit Rate", f"{s['Hit Rate']:.1f}%")
-                        m3.metric("Expectancy", f"{s['Expectancy']:.2f}%")
-                        m4.metric("Avg Prof", f"+{s['Avg Profit']:.2f}%")
-                        m5.metric("Avg Loss", f"{s['Avg Loss']:.2f}%")
-                        m6.metric("RR Ratio", f"{s['RR Ratio']:.2f}")
-                        st.dataframe(val_results['log'].style.map(lambda x: 'color: green' if x == '✅ Hit' else 'color: red', subset=['Result']), use_container_width=True)
-        else:
-            st.info("Select a stock in 'Strategy Builder' tab to see Pattern Lab.")
-        
-# --- End of Application ---
+                st.subheader("🛠️ Maintenance Tools")
+                col_adm1, col_adm2 = st.columns(2)
+                if col_adm1.button("🏷️ Run Automated Labeling", use_container_width=True):
+                    with st.spinner("Updating labels..."):
+                        count = run_automated_labeling()
+                        st.success(f"Updated {count} records!")
+                if col_adm2.button("🧹 Clear Local Cache", use_container_width=True):
+                    st.cache_data.clear()
+                    st.success("Local cache cleared!")
+        except Exception as e:
+            st.error(f"Error in Admin Tools: {e}")
 
+
+# --- End of Application ---
