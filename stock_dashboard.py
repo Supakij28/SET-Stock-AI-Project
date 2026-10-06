@@ -2625,9 +2625,58 @@ if main_category == "🎯 Trading & Daily Operations":
             st.error(f"เกิดข้อผิดพลาดใน Unified Scanner: {e}")
 
 elif main_category == "🌋 Market Insights & Analytics":
-    sub_tabs = st.tabs(["🌋 WVF & Silent Accum Analysis", "📊 Market Breadth & Regime"])
+    sub_tabs = st.tabs(["💙 Silent Accumulation Scanner", "🌋 WVF Market Bottom Analysis", "📊 Market Breadth & Regime"])
     
-    with sub_tabs[0]: # 🌋 WVF & Silent Accum Analysis
+    with sub_tabs[0]: # 💙 Silent Accumulation Scanner
+        try:
+            st.subheader("💙 Silent Accumulation Scanner")
+            st.info("💙 **Silent Accumulation:** ตรวจจับหุ้นที่มีการสะสมของราคาอย่างเงียบเชียบ โดยมีลักษณะราคาบวกเล็กน้อย วอลุ่มลดลงหรือคงที่ และมีความเสี่ยงต่ำ (ATC Risk < 0.5%)")
+            
+            if not batch_df.empty:
+                # Filter for Silent Accumulation
+                sa_df = batch_df[batch_df['Signal'] == 'SILENT ACCUM'].copy()
+                
+                if not sa_df.empty:
+                    # Calculate R:R Ratio
+                    sa_df['R:R Ratio'] = sa_df.apply(
+                        lambda x: round(safe_float(x.get('Expected Jump (%)', 0)) / abs(safe_float(x.get('Expected Drop (%)', 1))) if safe_float(x.get('Expected Drop (%)', 1)) != 0 else 0, 2),
+                        axis=1
+                    )
+                    
+                    # Sort by Conviction Score (Desc) and Relative Vol (Asc - lower vol means tighter accumulation)
+                    sa_df = sa_df.sort_values(by=['Conviction_Score', 'Relative Vol'], ascending=[False, True])
+                    
+                    # Display metrics
+                    st.write(f"🔥 พบหุ้นเข้าเงื่อนไข Silent Accumulation ทั้งหมด **{len(sa_df)}** ตัว")
+                    
+                    # Table display
+                    display_cols = ['Ticker', 'Last Update', 'Conviction_Score', 'Last Price', 'Relative Vol', 'R:R Ratio']
+                    st.dataframe(sa_df[display_cols].rename(columns={
+                        'Ticker': 'Ticker',
+                        'Last Update': 'Signal Date',
+                        'Conviction_Score': 'Accumulation Score',
+                        'Last Price': 'Close Price',
+                        'Relative Vol': 'Volume Ratio (RV)',
+                        'R:R Ratio': 'R:R Ratio'
+                    }), use_container_width=True, hide_index=True)
+                    
+                    # CSV Download
+                    csv_sa = sa_df.to_csv(index=False).encode('utf-8-sig')
+                    st.download_button(
+                        "📥 Download Silent_Accum_Results.csv",
+                        csv_sa,
+                        f"Silent_Accum_{datetime.now(SET_TZ).strftime('%Y%m%d')}.csv",
+                        "text/csv",
+                        key='download-sa-scanner'
+                    )
+                else:
+                    st.info("ℹ️ ยังไม่พบหุ้นที่มีสัญญาณ Silent Accumulation ในการสแกนรอบนี้")
+            else:
+                st.info("ℹ️ ยังไม่มีข้อมูลการสแกนในระบบ (กรุณากด Run SET100 Batch Scan ใน Sidebar เพื่อดูผลลัพธ์)")
+        except Exception as e:
+            st.error(f"Error in Silent Accum Scanner: {e}")
+
+    with sub_tabs[1]: # 🌋 WVF Market Bottom Analysis
         try:
             st.subheader("🌋 Market Bottom Analysis (Williams Vix Fix)")
             st.info("🌋 **Williams Vix Fix (WVF):** เครื่องมือจับจุดกลับตัวที่ฐาน (Market Bottom) โดยวัดความผันผวนของราคาเทียบกับ High ในรอบ Lookback หาก WVF พุ่งทะลุ Upper Bollinger Band จะเกิดสัญญาณ Climax Spike")
@@ -2804,7 +2853,7 @@ elif main_category == "🌋 Market Insights & Analytics":
         except Exception as e:
             st.error(f"Error in WVF Analysis: {e}")
 
-    with sub_tabs[1]: # 📊 Market Breadth & Regime
+    with sub_tabs[2]: # 📊 Market Breadth & Regime
         try:
             st.subheader(f"📊 Market Breadth: หุ้นบวก {pos_count} | หุ้นลบ {neg_count}")
             st.caption("📈 **Market Breadth:** สรุปภาพรวมความแข็งแกร่งของตลาด SET100")
