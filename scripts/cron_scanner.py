@@ -218,6 +218,7 @@ def run_scanner():
             'change_percent': float(row['change_percent']),
             'volume': float(row['volume']),
             'rsi': float(row['rsi']),
+            'rel_vol': float(row['rel_vol']), # Store Relative Volume
             'is_recovery': bool(row['is_recovery']),
             'is_pinbar': bool(row['is_pinbar']),
             'is_silent_accum': bool(row['is_silent_accum']),
@@ -227,7 +228,7 @@ def run_scanner():
         # [STRICT DB SCHEMA FILTERING]
         allowed_keys = [
             'ticker', 'scanned_at', 'score', 'signal', 'strategy', 'sector',
-            'close_price', 'change_percent', 'volume', 'rsi', 'is_recovery',
+            'close_price', 'change_percent', 'volume', 'rel_vol', 'rsi', 'is_recovery',
             'is_pinbar', 'is_silent_accum', 'scan_type'
         ]
         

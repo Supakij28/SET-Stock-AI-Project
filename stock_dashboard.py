@@ -700,8 +700,12 @@ def fetch_latest_scan_results():
                 'strategy': 'Strategy',
                 'rsi': 'RSI',
                 'change_percent': '% Change',
-                'volume': 'Relative Vol' 
+                'rel_vol': 'Relative Vol' # Corrected mapping
             })
+            
+            # If 'rel_vol' is missing (older schema), set to N/A instead of mapping absolute volume
+            if 'Relative Vol' not in df.columns:
+                df['Relative Vol'] = 1.0
             
             # Map Sector
             df['Sector'] = df['Ticker'].map(SET100_SECTORS)
@@ -771,6 +775,51 @@ def fetch_latest_scan_results():
     except Exception as e:
         st.error(f"⚠️ Error loading latest scan results: {e}")
         return None, 0, 0
+
+def fetch_historical_signals(signal_type, lookback_days=30):
+    """Fetch historical signals of a specific type from Supabase."""
+    if not supabase:
+        return pd.DataFrame()
+        
+    try:
+        cutoff_date = (datetime.now(SET_TZ) - timedelta(days=lookback_days)).isoformat()
+        
+        # Query auto_scan_results
+        resp = supabase.table("auto_scan_results") \
+            .select("*") \
+            .eq("signal", signal_type) \
+            .gte("scanned_at", cutoff_date) \
+            .order("scanned_at", desc=True) \
+            .execute()
+            
+        df = pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
+        
+        if not df.empty:
+            df = df.rename(columns={
+                'ticker': 'Ticker',
+                'close_price': 'Last Price',
+                'score': 'Conviction_Score',
+                'scanned_at': 'Last Update',
+                'signal': 'Signal',
+                'strategy': 'Strategy',
+                'change_percent': '% Change',
+                'rel_vol': 'Relative Vol'
+            })
+            # Handle RV formatting and missing column
+            if 'Relative Vol' not in df.columns:
+                df['Relative Vol'] = 1.0
+            
+            # Format dates
+            df['Last Update'] = pd.to_datetime(df['Last Update']).dt.tz_convert(SET_TZ).dt.strftime("%Y-%m-%d %H:%M")
+            
+            # Add required columns for UI compatibility
+            df['Expected Jump (%)'] = 0.0 # Placeholder
+            df['Expected Drop (%)'] = -1.0 # Placeholder
+            
+        return df
+    except Exception as e:
+        st.error(f"Error fetching historical signals: {e}")
+        return pd.DataFrame()
 
 def fetch_market_scan_results():
     """
@@ -2632,47 +2681,66 @@ elif main_category == "🌋 Market Insights & Analytics":
             st.subheader("💙 Silent Accumulation Scanner")
             st.info("💙 **Silent Accumulation:** ตรวจจับหุ้นที่มีการสะสมของราคาอย่างเงียบเชียบ โดยมีลักษณะราคาบวกเล็กน้อย วอลุ่มลดลงหรือคงที่ และมีความเสี่ยงต่ำ (ATC Risk < 0.5%)")
             
-            if not batch_df.empty:
-                # Filter for Silent Accumulation
-                sa_df = batch_df[batch_df['Signal'] == 'SILENT ACCUM'].copy()
-                
-                if not sa_df.empty:
-                    # Calculate R:R Ratio
-                    sa_df['R:R Ratio'] = sa_df.apply(
-                        lambda x: round(safe_float(x.get('Expected Jump (%)', 0)) / abs(safe_float(x.get('Expected Drop (%)', 1))) if safe_float(x.get('Expected Drop (%)', 1)) != 0 else 0, 2),
-                        axis=1
-                    )
-                    
-                    # Sort by Conviction Score (Desc) and Relative Vol (Asc - lower vol means tighter accumulation)
-                    sa_df = sa_df.sort_values(by=['Conviction_Score', 'Relative Vol'], ascending=[False, True])
-                    
-                    # Display metrics
-                    st.write(f"🔥 พบหุ้นเข้าเงื่อนไข Silent Accumulation ทั้งหมด **{len(sa_df)}** ตัว")
-                    
-                    # Table display
-                    display_cols = ['Ticker', 'Last Update', 'Conviction_Score', 'Last Price', 'Relative Vol', 'R:R Ratio']
-                    st.dataframe(sa_df[display_cols].rename(columns={
-                        'Ticker': 'Ticker',
-                        'Last Update': 'Signal Date',
-                        'Conviction_Score': 'Accumulation Score',
-                        'Last Price': 'Close Price',
-                        'Relative Vol': 'Volume Ratio (RV)',
-                        'R:R Ratio': 'R:R Ratio'
-                    }), use_container_width=True, hide_index=True)
-                    
-                    # CSV Download
-                    csv_sa = sa_df.to_csv(index=False).encode('utf-8-sig')
-                    st.download_button(
-                        "📥 Download Silent_Accum_Results.csv",
-                        csv_sa,
-                        f"Silent_Accum_{datetime.now(SET_TZ).strftime('%Y%m%d')}.csv",
-                        "text/csv",
-                        key='download-sa-scanner'
-                    )
+            # 1. Historical Filter
+            c1, c2 = st.columns([2, 3])
+            sa_lookback_mode = c1.selectbox("เลือกช่วงเวลาย้อนหลัง", 
+                                          ["Latest Scan Only", "Past 7 Days", "Past 30 Days", "All History"],
+                                          key="sa_lookback_filter")
+            
+            # 2. Data Preparation
+            sa_df = pd.DataFrame()
+            if sa_lookback_mode == "Latest Scan Only":
+                if not batch_df.empty:
+                    sa_df = batch_df[batch_df['Signal'] == 'SILENT ACCUM'].copy()
                 else:
-                    st.info("ℹ️ ยังไม่พบหุ้นที่มีสัญญาณ Silent Accumulation ในการสแกนรอบนี้")
+                    st.info("ℹ️ ยังไม่มีข้อมูลการสแกนล่าสุด (กรุณากด Run SET100 Batch Scan ใน Sidebar)")
             else:
-                st.info("ℹ️ ยังไม่มีข้อมูลการสแกนในระบบ (กรุณากด Run SET100 Batch Scan ใน Sidebar เพื่อดูผลลัพธ์)")
+                days_map = {"Past 7 Days": 7, "Past 30 Days": 30, "All History": 365}
+                lookback_days = days_map.get(sa_lookback_mode, 7)
+                with st.spinner(f"⏳ Loading historical signals for {sa_lookback_mode}..."):
+                    sa_df = fetch_historical_signals('SILENT ACCUM', lookback_days=lookback_days)
+            
+            if not sa_df.empty:
+                # Calculate R:R Ratio (Defensive)
+                def calc_rr(row):
+                    jump = safe_float(row.get('Expected Jump (%)', 0))
+                    drop = abs(safe_float(row.get('Expected Drop (%)', 1)))
+                    return round(jump / drop if drop != 0 else 0, 2)
+                
+                sa_df['R:R Ratio'] = sa_df.apply(calc_rr, axis=1)
+                
+                # Format Numeric Columns for Display
+                sa_df['Relative Vol'] = sa_df['Relative Vol'].apply(lambda x: round(safe_float(x), 2))
+                sa_df['Conviction_Score'] = sa_df['Conviction_Score'].apply(lambda x: round(safe_float(x), 2))
+                
+                # Sort by Conviction Score (Desc) and Relative Vol (Asc)
+                sa_df = sa_df.sort_values(by=['Conviction_Score', 'Relative Vol'], ascending=[False, True])
+                
+                # Display metrics
+                st.write(f"🔥 พบหุ้นเข้าเงื่อนไข Silent Accumulation ({sa_lookback_mode}) ทั้งหมด **{len(sa_df)}** ตัว")
+                
+                # Table display
+                display_cols = ['Ticker', 'Last Update', 'Conviction_Score', 'Last Price', 'Relative Vol', 'R:R Ratio']
+                st.dataframe(sa_df[display_cols].rename(columns={
+                    'Ticker': 'Ticker',
+                    'Last Update': 'Signal Date',
+                    'Conviction_Score': 'Accumulation Score',
+                    'Last Price': 'Close Price',
+                    'Relative Vol': 'Volume Ratio (RV)',
+                    'R:R Ratio': 'R:R Ratio'
+                }), use_container_width=True, hide_index=True)
+                
+                # CSV Download
+                csv_sa = sa_df.to_csv(index=False).encode('utf-8-sig')
+                st.download_button(
+                    "📥 Download Silent_Accum_Results.csv",
+                    csv_sa,
+                    f"Silent_Accum_{sa_lookback_mode.replace(' ', '_')}_{datetime.now(SET_TZ).strftime('%Y%m%d')}.csv",
+                    "text/csv",
+                    key='download-sa-scanner-hist'
+                )
+            elif sa_lookback_mode != "Latest Scan Only":
+                st.info(f"ℹ️ ไม่พบข้อมูลสัญญาณ Silent Accumulation ในช่วง {sa_lookback_mode}")
         except Exception as e:
             st.error(f"Error in Silent Accum Scanner: {e}")
 

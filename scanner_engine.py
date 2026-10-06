@@ -28,7 +28,9 @@ def calculate_quant_indicators(df, rsi_period=14, ema_fast=10, ema_slow=50):
     d['EMA_Slow'] = d['Close'].ewm(span=ema_slow, adjust=False).mean()
     
     # Relative Volume (RV)
-    d['RV'] = d['Volume'] / (d['Volume'].rolling(20).mean() + 1e-9)
+    # RV = Current Volume / 20-day SMA Volume. Cap at 50 to avoid extreme outliers.
+    sma_vol = d['Volume'].rolling(20).mean()
+    d['RV'] = (d['Volume'] / (sma_vol + 1e-9)).clip(upper=50.0)
     
     # ATR
     high_low = d['High'] - d['Low']
