@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import yfinance as yf
 from datetime import datetime, timedelta
 import backtest_engine
 import pytz
@@ -102,19 +103,34 @@ def check_active_positions(positions_df, ticker_data_dict, optimized_params_dict
         ticker = pos['ticker']
         entry_price = pos['entry_price']
         
-        if ticker not in ticker_data_dict:
-            continue
+        # Ensure ticker format is correct for yfinance
+        clean_ticker = ticker.strip().upper()
+        if not clean_ticker.endswith('.BK') and not clean_ticker.startswith('^'):
+            clean_ticker = f"{clean_ticker}.BK"
+        
+        current_price = 0.0
+        
+        # 1. Try to get live price from ticker_data_dict (Batch data)
+        if clean_ticker in ticker_data_dict:
+            df = ticker_data_dict[clean_ticker]
+            if df is not None and not df.empty:
+                current_price = df.iloc[-1]['Close']
+        
+        # 2. If price seems stale or not in dict, try yfinance fast_info for REAL-TIME
+        if current_price == 0.0:
+            try:
+                t = yf.Ticker(clean_ticker)
+                current_price = t.fast_info['lastPrice']
+            except:
+                pass
             
-        df = ticker_data_dict[ticker]
-        if df is None or df.empty:
+        if current_price == 0.0:
             continue
             
         params = default_params.copy()
         if optimized_params_dict and ticker in optimized_params_dict:
             params.update(optimized_params_dict[ticker])
             
-        last_row = df.iloc[-1]
-        current_price = last_row['Close']
         pnl_pct = (current_price - entry_price) / entry_price
         
         target_tp = entry_price * (1 + params.get('take_profit', 0.08))

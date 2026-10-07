@@ -2429,7 +2429,27 @@ if main_category == "🎯 Trading & Daily Operations":
                 st.info("ℹ️ ยังไม่มีสัญญาณซื้อใหม่ในวันนี้")
             
             st.divider()
-            st.markdown("### 🔴 Exit & Risk Control Center")
+            c_exit1, c_exit2 = st.columns([8, 2])
+            c_exit1.markdown("### 🔴 Exit & Risk Control Center")
+            
+            if c_exit2.button("🔄 Refresh Live Prices", use_container_width=True):
+                # Clear all stock data caches to force fresh fetch
+                st.cache_data.clear()
+                # Clear disk cache for active tickers to ensure live data
+                if 'active_positions' in st.session_state and st.session_state['active_positions'] is not None:
+                    active_tickers = st.session_state['active_positions']['ticker'].tolist()
+                    for t in active_tickers:
+                        ct = t.strip().upper()
+                        if not ct.endswith('.BK') and not ct.startswith('^'):
+                            ct = f"{ct}.BK"
+                        cache_file = CACHE_DIR / f"{ct.replace('^', '_')}.pkl"
+                        if cache_file.exists():
+                            try:
+                                cache_file.unlink()
+                            except:
+                                pass
+                st.rerun()
+
             st.caption("ติดตามสถานะออเดอร์ที่เปิดอยู่ และตรวจสอบจุดตัดขาดทุน/ทำกำไร")
             
             if not exit_control_df.empty:
