@@ -2326,33 +2326,32 @@ if main_category == "🎯 Trading & Daily Operations":
                 signal_results = signal_engine.evaluate_daily_signals(all_data, optimized_params_dict=optimized_params)
                 entry_orders_df = signal_results['new_entries']
                 
-                # Active Positions Logic - Load from Supabase if available
-                if 'active_positions' not in st.session_state or st.session_state.get('active_positions') is None:
-                    if supabase:
-                        try:
-                            # Fetch ONLY explicitly executed Paper trades (PAPER_OPEN status)
-                            resp = supabase.table("trading_log").select("*").eq("status", "PAPER_OPEN").execute()
-                            if resp.data:
-                                df_active = pd.DataFrame(resp.data)
-                                # Map Supabase columns: ticker -> ticker, entry_price -> entry_price, timestamp -> entry_date
-                                # System signals use 'last_price' as entry estimate, Paper trades use 'entry_price'
-                                if 'entry_price' in df_active.columns:
-                                    df_active['entry_price'] = df_active['entry_price'].fillna(df_active['last_price'])
-                                else:
-                                    df_active['entry_price'] = df_active['last_price']
-                                    
-                                st.session_state['active_positions'] = df_active[['ticker', 'entry_price', 'timestamp']].rename(columns={
-                                    'ticker': 'ticker',
-                                    'entry_price': 'entry_price',
-                                    'timestamp': 'entry_date'
-                                })
+                # Active Positions Logic - Always fetch fresh from Supabase for Command Center accuracy
+                if supabase:
+                    try:
+                        # Fetch ONLY explicitly executed Paper trades (PAPER_OPEN status)
+                        resp = supabase.table("trading_log").select("*").eq("status", "PAPER_OPEN").execute()
+                        if resp.data:
+                            df_active = pd.DataFrame(resp.data)
+                            # Map Supabase columns: ticker -> ticker, entry_price -> entry_price, timestamp -> entry_date
+                            # Paper trades use 'entry_price'
+                            if 'entry_price' in df_active.columns:
+                                df_active['entry_price'] = df_active['entry_price'].fillna(df_active['last_price'])
                             else:
-                                st.session_state['active_positions'] = pd.DataFrame(columns=['ticker', 'entry_price', 'entry_date'])
-                        except Exception as e:
-                            st.error(f"Error fetching positions from Supabase: {e}")
+                                df_active['entry_price'] = df_active['last_price']
+                                
+                            st.session_state['active_positions'] = df_active[['ticker', 'entry_price', 'timestamp']].rename(columns={
+                                'ticker': 'ticker',
+                                'entry_price': 'entry_price',
+                                'timestamp': 'entry_date'
+                            })
+                        else:
                             st.session_state['active_positions'] = pd.DataFrame(columns=['ticker', 'entry_price', 'entry_date'])
-                    else:
+                    except Exception as e:
+                        st.error(f"Error fetching positions from Supabase: {e}")
                         st.session_state['active_positions'] = pd.DataFrame(columns=['ticker', 'entry_price', 'entry_date'])
+                else:
+                    st.session_state['active_positions'] = pd.DataFrame(columns=['ticker', 'entry_price', 'entry_date'])
                 
                 active_pos_df = st.session_state['active_positions']
                 exit_control_df = signal_engine.check_active_positions(active_pos_df, all_data, optimized_params_dict=optimized_params)
