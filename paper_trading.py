@@ -7,7 +7,7 @@ SET_TZ = pytz.timezone('Asia/Bangkok')
 
 def execute_paper_buy(supabase, ticker, entry_price, quantity, signal_type="WVF"):
     """
-    Inserts an 'OPEN' position into trading_log with defensive column handling.
+    Inserts a 'PAPER_OPEN' position into trading_log with defensive column handling.
     """
     if not supabase:
         return False, "Supabase client not initialized"
@@ -19,7 +19,7 @@ def execute_paper_buy(supabase, ticker, entry_price, quantity, signal_type="WVF"
             "ticker": ticker,
             "entry_price": float(entry_price),
             "last_price": float(entry_price),
-            "status": "OPEN",
+            "status": "PAPER_OPEN",
             "signal": signal_type,
             "timestamp": now.isoformat(),
             "run_id": f"PAPER_{now.strftime('%Y%m%d_%H%M%S')}"
@@ -48,7 +48,7 @@ def execute_paper_buy(supabase, ticker, entry_price, quantity, signal_type="WVF"
 
 def execute_paper_sell(supabase, position_id, exit_price, exit_reason="MANUAL"):
     """
-    Closes an 'OPEN' position with defensive column handling.
+    Closes a 'PAPER_OPEN' position with defensive column handling.
     """
     if not supabase:
         return False, "Supabase client not initialized"
@@ -70,7 +70,7 @@ def execute_paper_sell(supabase, position_id, exit_price, exit_reason="MANUAL"):
         # 3. Update payload
         update_payload = {
             "exit_price": float(exit_price),
-            "status": "CLOSED",
+            "status": "PAPER_CLOSED",
             "verified_date": now.strftime('%Y-%m-%d') # Fallback for exit_date
         }
         
@@ -106,8 +106,8 @@ def get_paper_portfolio_metrics(supabase):
         return None
     
     try:
-        # Fetch all paper trades (status OPEN or CLOSED)
-        resp = supabase.table("trading_log").select("*").or_("status.eq.OPEN,status.eq.CLOSED").execute()
+        # Fetch all paper trades (status PAPER_OPEN or PAPER_CLOSED)
+        resp = supabase.table("trading_log").select("*").or_("status.eq.PAPER_OPEN,status.eq.PAPER_CLOSED").execute()
         if not resp.data:
             return {
                 "total_portfolio_value": 0.0,
@@ -127,7 +127,7 @@ def get_paper_portfolio_metrics(supabase):
                 df[col] = 0.0 if col != 'status' else 'UNKNOWN'
         
         # Realized PnL (Closed trades)
-        closed_trades = df[df['status'] == 'CLOSED']
+        closed_trades = df[df['status'] == 'PAPER_CLOSED']
         realized_pnl = 0.0
         win_rate = 0.0
         if not closed_trades.empty:
@@ -140,7 +140,7 @@ def get_paper_portfolio_metrics(supabase):
             win_rate = (pnl_pcts > 0).mean() * 100 if len(pnl_pcts) > 0 else 0
             
         # Unrealized PnL (Open trades)
-        open_trades = df[df['status'] == 'OPEN']
+        open_trades = df[df['status'] == 'PAPER_OPEN']
         unrealized_pnl = 0.0
         total_open_value = 0.0
         if not open_trades.empty:

@@ -2330,8 +2330,8 @@ if main_category == "🎯 Trading & Daily Operations":
                 if 'active_positions' not in st.session_state or st.session_state.get('active_positions') is None:
                     if supabase:
                         try:
-                            # Fetch positions with 'Pending' (System) or 'OPEN' (Paper) status from trading_log
-                            resp = supabase.table("trading_log").select("*").or_("status.eq.Pending,status.eq.OPEN").execute()
+                            # Fetch ONLY explicitly executed Paper trades (PAPER_OPEN status)
+                            resp = supabase.table("trading_log").select("*").eq("status", "PAPER_OPEN").execute()
                             if resp.data:
                                 df_active = pd.DataFrame(resp.data)
                                 # Map Supabase columns: ticker -> ticker, entry_price -> entry_price, timestamp -> entry_date
@@ -2477,7 +2477,7 @@ if main_category == "🎯 Trading & Daily Operations":
                 with st.expander("🔴 Execute Paper Sell / Close Positions", expanded=False):
                     # We need the Supabase IDs to close positions
                     if supabase:
-                        resp = supabase.table("trading_log").select("id, ticker, entry_price, status").eq("status", "OPEN").execute()
+                        resp = supabase.table("trading_log").select("id, ticker, entry_price, status").eq("status", "PAPER_OPEN").execute()
                         if resp.data:
                             open_pos_df = pd.DataFrame(resp.data)
                             sell_col1, sell_col2, sell_col3 = st.columns([2, 2, 1])
