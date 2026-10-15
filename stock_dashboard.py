@@ -2368,7 +2368,7 @@ if main_category == "🎯 Trading & Daily Operations":
             # --- Paper Trading Portfolio Metrics ---
             st.divider()
             st.markdown("### 💼 Paper Trading Portfolio Summary")
-            portfolio_metrics = paper_trading.get_paper_portfolio_metrics(supabase)
+            portfolio_metrics = paper_trading.get_paper_portfolio_metrics(supabase, live_prices_dict=all_data)
             if portfolio_metrics:
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Total Portfolio Value", f"{portfolio_metrics['total_portfolio_value']:,.2f} THB")
