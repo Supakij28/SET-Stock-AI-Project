@@ -2357,16 +2357,21 @@ if main_category == "🎯 Trading & Daily Operations":
                 active_pos_df = st.session_state['active_positions']
                 exit_control_df = signal_engine.check_active_positions(active_pos_df, all_data, optimized_params_dict=optimized_params)
                 
-                # --- Enrichment & Filtering Logic (Strict Inner Join with Oversold Scanner) ---
+                # --- Enrichment & Filtering Logic (Left Join with Oversold Scanner) ---
                 enriched_orders = pd.DataFrame()
                 if not entry_orders_df.empty:
                     display_entry_df = entry_orders_df.copy()
                     display_entry_df['Ticker_Norm'] = display_entry_df['Ticker'].astype(str).str.strip().str.upper()
                     
                     scanner_source = fetch_market_scan_results()
+                    # Start with all entry orders
+                    enriched_orders = display_entry_df.copy()
+                    
                     if not scanner_source.empty:
                         scanner_source = scanner_source.reset_index()
                         scanner_source['rsi'] = pd.to_numeric(scanner_source['rsi'], errors='coerce')
+                        
+                        # [OVERSOLD SUBSET] Filter for tickers that meet the Oversold criteria
                         oversold_scanner = scanner_source[scanner_source['rsi'] <= 35].copy()
                         
                         if not oversold_scanner.empty:
@@ -2375,13 +2380,17 @@ if main_category == "🎯 Trading & Daily Operations":
                             scanner_data = scanner_data.rename(columns={'rsi': 'RSI', 'signal': 'Scanner Signal', 'strategy': 'Strategy', 'score': 'Scanner Score'})
                             scanner_data = scanner_data.sort_values('Ticker_Norm').drop_duplicates(subset=['Ticker_Norm'], keep='first')
                             
-                            # Perform strict INNER JOIN
-                            enriched_orders = pd.merge(display_entry_df, scanner_data, on='Ticker_Norm', how='inner')
+                            # Perform LEFT JOIN to keep all original entry orders
+                            # Appends scanner data ONLY for those that meet the criteria
+                            enriched_orders = pd.merge(display_entry_df, scanner_data, on='Ticker_Norm', how='left')
             
             col_sc1, col_sc2, col_sc3 = st.columns(3)
-            # Display both total signals and those meeting the strict scanner criteria
-            filtered_count = len(enriched_orders)
-            col_sc1.metric("Today's Buy Signals (Filtered)", filtered_count, delta=f"Total: {len(entry_orders_df)}")
+            # Filtered count: number of tickers that actually matched the Oversold criteria (RSI column is not NaN)
+            match_count = 0
+            if not enriched_orders.empty and 'RSI' in enriched_orders.columns:
+                match_count = len(enriched_orders[enriched_orders['RSI'].notna()])
+            
+            col_sc1.metric("Oversold Matches (Filtered)", match_count, delta=f"Total Signals: {len(entry_orders_df)}")
             col_sc2.metric("Active Open Positions", len(active_pos_df))
             
             tp_sl_reached = 0
@@ -2407,7 +2416,7 @@ if main_category == "🎯 Trading & Daily Operations":
             st.caption("ออเดอร์ที่เตรียมเข้าซื้อที่ราคาเปิดในวันทำการถัดไป (Zero Look-Ahead Bias)")
             
             if not enriched_orders.empty:
-                # Display Enriched Table (Filtered by Inner Join)
+                # Display Enriched Table (Left Joined with Oversold Scanner)
                 # Remove internal normalization column for clean display
                 display_cols = [c for c in enriched_orders.columns if c != 'Ticker_Norm']
                 
