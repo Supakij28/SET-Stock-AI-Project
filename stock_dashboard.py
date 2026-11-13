@@ -2356,9 +2356,32 @@ if main_category == "🎯 Trading & Daily Operations":
                 
                 active_pos_df = st.session_state['active_positions']
                 exit_control_df = signal_engine.check_active_positions(active_pos_df, all_data, optimized_params_dict=optimized_params)
+                
+                # --- Enrichment & Filtering Logic (Strict Inner Join with Oversold Scanner) ---
+                enriched_orders = pd.DataFrame()
+                if not entry_orders_df.empty:
+                    display_entry_df = entry_orders_df.copy()
+                    display_entry_df['Ticker_Norm'] = display_entry_df['Ticker'].astype(str).str.strip().str.upper()
+                    
+                    scanner_source = fetch_market_scan_results()
+                    if not scanner_source.empty:
+                        scanner_source = scanner_source.reset_index()
+                        scanner_source['rsi'] = pd.to_numeric(scanner_source['rsi'], errors='coerce')
+                        oversold_scanner = scanner_source[scanner_source['rsi'] <= 35].copy()
+                        
+                        if not oversold_scanner.empty:
+                            oversold_scanner['Ticker_Norm'] = oversold_scanner['ticker'].astype(str).str.strip().str.upper()
+                            scanner_data = oversold_scanner[['Ticker_Norm', 'rsi', 'signal', 'strategy', 'score']].copy()
+                            scanner_data = scanner_data.rename(columns={'rsi': 'RSI', 'signal': 'Scanner Signal', 'strategy': 'Strategy', 'score': 'Scanner Score'})
+                            scanner_data = scanner_data.sort_values('Ticker_Norm').drop_duplicates(subset=['Ticker_Norm'], keep='first')
+                            
+                            # Perform strict INNER JOIN
+                            enriched_orders = pd.merge(display_entry_df, scanner_data, on='Ticker_Norm', how='inner')
             
             col_sc1, col_sc2, col_sc3 = st.columns(3)
-            col_sc1.metric("Today's New Buy Signals", len(entry_orders_df))
+            # Display both total signals and those meeting the strict scanner criteria
+            filtered_count = len(enriched_orders)
+            col_sc1.metric("Today's Buy Signals (Filtered)", filtered_count, delta=f"Total: {len(entry_orders_df)}")
             col_sc2.metric("Active Open Positions", len(active_pos_df))
             
             tp_sl_reached = 0
@@ -2383,41 +2406,8 @@ if main_category == "🎯 Trading & Daily Operations":
             st.markdown("### 🟢 Entry Orders for Tomorrow (T+1 Open)")
             st.caption("ออเดอร์ที่เตรียมเข้าซื้อที่ราคาเปิดในวันทำการถัดไป (Zero Look-Ahead Bias)")
             
-            if not entry_orders_df.empty:
-                # 1. Enriched View for UI (Derived State)
-                display_entry_df = entry_orders_df.copy()
-                
-                # Robust Ticker Normalization for matching (Strip whitespace and uppercase)
-                display_entry_df['Ticker_Norm'] = display_entry_df['Ticker'].astype(str).str.strip().str.upper()
-                
-                # Fetch comprehensive scanner data (Manual + Auto) for enrichment
-                # This ensures we get data even for signals that might be filtered out in the main radar
-                scanner_source = fetch_market_scan_results()
-                
-                enriched_orders = display_entry_df.copy()
-                
-                if not scanner_source.empty:
-                    # Ensure Ticker is a column and normalized
-                    scanner_source = scanner_source.reset_index()
-                    scanner_source['Ticker_Norm'] = scanner_source['ticker'].astype(str).str.strip().str.upper()
-                    
-                    # Select and rename columns for display
-                    # Using 'score' which fetch_market_scan_results already refined from conviction/bullish
-                    scanner_data = scanner_source[['Ticker_Norm', 'rsi', 'signal', 'strategy', 'score']].copy()
-                    scanner_data = scanner_data.rename(columns={
-                        'rsi': 'RSI',
-                        'signal': 'Scanner Signal',
-                        'strategy': 'Strategy',
-                        'score': 'Scanner Score'
-                    })
-                    
-                    # Remove duplicates in scanner_data (keep latest scan for each ticker)
-                    scanner_data = scanner_data.sort_values('Ticker_Norm').drop_duplicates(subset=['Ticker_Norm'], keep='first')
-                    
-                    # Enrich entry orders (Left Join on Normalized Ticker)
-                    enriched_orders = pd.merge(display_entry_df, scanner_data, on='Ticker_Norm', how='left')
-                
-                # 2. Display Enriched Table
+            if not enriched_orders.empty:
+                # Display Enriched Table (Filtered by Inner Join)
                 # Remove internal normalization column for clean display
                 display_cols = [c for c in enriched_orders.columns if c != 'Ticker_Norm']
                 
@@ -2433,14 +2423,15 @@ if main_category == "🎯 Trading & Daily Operations":
                 
                 st.dataframe(formatted_entry_df, use_container_width=True, hide_index=True)
                 
-                # Paper Trading Execution Form
+                # Paper Trading Execution Form (Using the FILTERED enriched_orders list)
                 with st.expander("🟢 Execute Paper Buy Orders", expanded=False):
                     buy_col1, buy_col2, buy_col3 = st.columns([2, 2, 1])
-                    selected_ticker = buy_col1.selectbox("Select Ticker to Buy", options=display_entry_df['Ticker'].tolist())
+                    selected_ticker = buy_col1.selectbox("Select Ticker to Buy", options=enriched_orders['Ticker'].tolist())
                     
-                    # Get signal type for the selected ticker
-                    sig_type = display_entry_df[display_entry_df['Ticker'] == selected_ticker]['Signal Type'].values[0]
-                    entry_px = display_entry_df[display_entry_df['Ticker'] == selected_ticker]['Calculated Entry Price (Open)'].values[0]
+                    # Get signal type and price for the selected ticker from the enriched set
+                    ticker_row = enriched_orders[enriched_orders['Ticker'] == selected_ticker]
+                    sig_type = ticker_row['Signal Type'].values[0]
+                    entry_px = ticker_row['Calculated Entry Price (Open)'].values[0]
                     
                     quantity = buy_col2.number_input(f"Quantity for {selected_ticker}", min_value=100, value=1000, step=100)
                     
@@ -2452,8 +2443,11 @@ if main_category == "🎯 Trading & Daily Operations":
                             st.rerun()
                         else:
                             st.error(msg)
-
-                csv_orders = entry_orders_df.to_csv(index=False).encode('utf-8-sig')
+                
+                csv_orders = enriched_orders[display_cols].to_csv(index=False).encode('utf-8-sig')
+            else:
+                st.info("ℹ️ No matching orders found in both Signal Engine and Scanner Summary.")
+                csv_orders = pd.DataFrame().to_csv(index=False).encode('utf-8-sig')
                 st.download_button(
                     "📥 Download Tomorrow_Orders.csv",
                     csv_orders,
