@@ -1733,7 +1733,8 @@ def generate_unified_report(batch_df, regime):
             'Warnings': warnings,
             'Price': row['Last Price'],
             'Intraday_History': list(past_signals),
-            'Sector_RS': sector_rs
+            'Sector_RS': sector_rs,
+            'RSI': rsi
         })
     
     # Sort by: 1. Signal Tier (1 is highest), 2. Conviction Score
@@ -2383,16 +2384,33 @@ if main_category == "🎯 Trading & Daily Operations":
             st.caption("ออเดอร์ที่เตรียมเข้าซื้อที่ราคาเปิดในวันทำการถัดไป (Zero Look-Ahead Bias)")
             
             if not entry_orders_df.empty:
-                # Add columns for Paper Trading selection
+                # 1. Enriched View for UI (Derived State)
                 display_entry_df = entry_orders_df.copy()
+                enriched_orders = display_entry_df.copy()
+                
+                if not batch_df.empty:
+                    # Generate unified analysis for enrichment
+                    unified_analysis = generate_unified_report(batch_df, regime)
+                    if not unified_analysis.empty:
+                        # Find matching data from Scanner (Inner Join logic for matching tickers)
+                        scanner_data = unified_analysis[['Ticker', 'RSI', 'Signal', 'Strategy', 'Conviction_Score']].copy()
+                        scanner_data = scanner_data.rename(columns={
+                            'Signal': 'Scanner Signal',
+                            'Conviction_Score': 'Scanner Score'
+                        })
+                        
+                        # Enrich entry orders with Scanner data
+                        enriched_orders = pd.merge(display_entry_df, scanner_data, on='Ticker', how='left')
                 
                 # Show the signals table with institutional formatting
-                formatted_entry_df = display_entry_df.style.format({
+                formatted_entry_df = enriched_orders.style.format({
                     'Calculated Entry Price (Open)': '{:,.2f}',
                     'Dynamic Stop Loss': '{:,.2f}',
                     'Dynamic Take Profit': '{:,.2f}',
-                    'R:R Ratio': '{:,.2f}'
-                }).set_properties(**{'font-weight': 'bold', 'font-size': '15px'})
+                    'R:R Ratio': '{:,.2f}',
+                    'RSI': '{:,.1f}',
+                    'Scanner Score': '{:,.0f}'
+                }, na_rep='-').set_properties(**{'font-weight': 'bold', 'font-size': '15px'})
                 
                 st.dataframe(formatted_entry_df, use_container_width=True, hide_index=True)
                 
