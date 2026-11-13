@@ -2386,24 +2386,43 @@ if main_category == "🎯 Trading & Daily Operations":
             if not entry_orders_df.empty:
                 # 1. Enriched View for UI (Derived State)
                 display_entry_df = entry_orders_df.copy()
+                
+                # Robust Ticker Normalization for matching (Strip whitespace and uppercase)
+                display_entry_df['Ticker_Norm'] = display_entry_df['Ticker'].astype(str).str.strip().str.upper()
+                
+                # Fetch comprehensive scanner data (Manual + Auto) for enrichment
+                # This ensures we get data even for signals that might be filtered out in the main radar
+                scanner_source = fetch_market_scan_results()
+                
                 enriched_orders = display_entry_df.copy()
                 
-                if not batch_df.empty:
-                    # Generate unified analysis for enrichment
-                    unified_analysis = generate_unified_report(batch_df, regime)
-                    if not unified_analysis.empty:
-                        # Find matching data from Scanner (Inner Join logic for matching tickers)
-                        scanner_data = unified_analysis[['Ticker', 'RSI', 'Signal', 'Strategy', 'Conviction_Score']].copy()
-                        scanner_data = scanner_data.rename(columns={
-                            'Signal': 'Scanner Signal',
-                            'Conviction_Score': 'Scanner Score'
-                        })
-                        
-                        # Enrich entry orders with Scanner data
-                        enriched_orders = pd.merge(display_entry_df, scanner_data, on='Ticker', how='left')
+                if not scanner_source.empty:
+                    # Ensure Ticker is a column and normalized
+                    scanner_source = scanner_source.reset_index()
+                    scanner_source['Ticker_Norm'] = scanner_source['ticker'].astype(str).str.strip().str.upper()
+                    
+                    # Select and rename columns for display
+                    # Using 'score' which fetch_market_scan_results already refined from conviction/bullish
+                    scanner_data = scanner_source[['Ticker_Norm', 'rsi', 'signal', 'strategy', 'score']].copy()
+                    scanner_data = scanner_data.rename(columns={
+                        'rsi': 'RSI',
+                        'signal': 'Scanner Signal',
+                        'strategy': 'Strategy',
+                        'score': 'Scanner Score'
+                    })
+                    
+                    # Remove duplicates in scanner_data (keep latest scan for each ticker)
+                    scanner_data = scanner_data.sort_values('Ticker_Norm').drop_duplicates(subset=['Ticker_Norm'], keep='first')
+                    
+                    # Enrich entry orders (Left Join on Normalized Ticker)
+                    enriched_orders = pd.merge(display_entry_df, scanner_data, on='Ticker_Norm', how='left')
+                
+                # 2. Display Enriched Table
+                # Remove internal normalization column for clean display
+                display_cols = [c for c in enriched_orders.columns if c != 'Ticker_Norm']
                 
                 # Show the signals table with institutional formatting
-                formatted_entry_df = enriched_orders.style.format({
+                formatted_entry_df = enriched_orders[display_cols].style.format({
                     'Calculated Entry Price (Open)': '{:,.2f}',
                     'Dynamic Stop Loss': '{:,.2f}',
                     'Dynamic Take Profit': '{:,.2f}',
