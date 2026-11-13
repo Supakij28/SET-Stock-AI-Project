@@ -2448,6 +2448,9 @@ if main_category == "🎯 Trading & Daily Operations":
             else:
                 st.info("ℹ️ No matching orders found in both Signal Engine and Scanner Summary.")
                 csv_orders = pd.DataFrame().to_csv(index=False).encode('utf-8-sig')
+            
+            # Download button for the filtered list (available if not completely empty from signal engine)
+            if 'csv_orders' in locals():
                 st.download_button(
                     "📥 Download Tomorrow_Orders.csv",
                     csv_orders,
@@ -2455,8 +2458,6 @@ if main_category == "🎯 Trading & Daily Operations":
                     "text/csv",
                     key='download-orders-command-center'
                 )
-            else:
-                st.info("ℹ️ ยังไม่มีสัญญาณซื้อใหม่ในวันนี้")
             
             st.divider()
             c_exit1, c_exit2 = st.columns([8, 2])
