@@ -3,26 +3,31 @@ import numpy as np
 from datetime import datetime
 import itertools
 
-def calculate_indicators(df, lookback=22, bb_length=20, bb_mult=2.0, percentile_high=0.85, ema_period=200):
+def calculate_indicators(df, lookback=22, bb_length=4, bb_mult=2.0, lb=50, ph=0.85, ema_period=200):
     """
     Calculate WVF, EMA, and ATR for filtering and exits.
+    Aligned 1:1 with TradingView Pine Script (CM_WVF_V3_Ult).
     """
     d = df.copy()
-    if len(d) < max(lookback, bb_length, ema_period):
+    if len(d) < max(lookback, bb_length, lb, ema_period):
         return d
         
-    # WVF Calculation
+    # 1. Williams Vix Fix Formula (Pine Script: highest(close, 22))
     d['Highest_Close'] = d['Close'].rolling(window=lookback).max()
     d['WVF'] = ((d['Highest_Close'] - d['Low']) / d['Highest_Close']) * 100
     
+    # 2. Bollinger Upper Band (Pine Script: ta.stdev uses population std)
     d['WVF_SMA'] = d['WVF'].rolling(window=bb_length).mean()
-    d['WVF_Std'] = d['WVF'].rolling(window=bb_length).std()
+    d['WVF_Std'] = d['WVF'].rolling(window=bb_length).std(ddof=0)
     d['WVF_Upper'] = d['WVF_SMA'] + (bb_mult * d['WVF_Std'])
-    d['WVF_High_Range'] = d['WVF'].rolling(window=lookback).max() * percentile_high
     
+    # 3. Range High (Pine Script: highest(wvf, 50) * 0.85)
+    d['WVF_High_Range'] = d['WVF'].rolling(window=lb).max() * ph
+    
+    # 4. Condition Logic
     d['Is_WVF_Spike'] = (d['WVF'] >= d['WVF_Upper']) | (d['WVF'] >= d['WVF_High_Range'])
     
-    # Enhanced WVF Bar Classification
+    # 5. Enhanced WVF Bar Classification (TradingView Style)
     d['Was_WVF_Spike_Prev'] = d['Is_WVF_Spike'].shift(1).fillna(False)
     d['HH_14'] = d['High'].rolling(14).max()
     d['HH_40'] = d['High'].rolling(40).max()
@@ -30,22 +35,20 @@ def calculate_indicators(df, lookback=22, bb_length=20, bb_mult=2.0, percentile_
     def classify_wvf(row):
         is_green = row['Is_WVF_Spike']
         was_green = row['Was_WVF_Spike_Prev']
-        close = row['Close']
         
         if is_green:
             return '🟢 GREEN_CLIMAX'
         
         if was_green:
-            # Check for Reversal Strength (Filtered Entry)
-            # Need Close.shift(3), but in row-by-row apply we don't have it easily
-            # We'll handle Filtered Entry in a vectorized way after this
+            # Reversal Ready is the default when was_green and not is_green
             return '✅ REVERSAL_READY'
         
         return '⚪ NORMAL'
 
     d['WVF_Status'] = d.apply(classify_wvf, axis=1)
     
-    # Refine Filtered Entry using vectorized operations for performance and access to shifts
+    # 6. Refine Filtered Entry (Confirmed Buy)
+    # Filtered Entry: is_green == False AND was_green == True AND Close > Close.shift(3) AND (Close < HH14 OR Close < HH40)
     filtered_entry_cond = (
         (d['Is_WVF_Spike'] == False) & 
         (d['Was_WVF_Spike_Prev'] == True) & 

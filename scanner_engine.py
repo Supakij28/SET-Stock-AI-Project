@@ -43,30 +43,32 @@ def calculate_quant_indicators(df, rsi_period=14, ema_fast=10, ema_slow=50):
     
     return d.dropna()
 
-def calculate_wvf(df, lookback=22, bb_length=20, bb_mult=2.0, percentile_high=0.85):
+def calculate_wvf(df, lookback=22, bb_length=4, bb_mult=2.0, lb=50, ph=0.85):
     """
     Williams Vix Fix (WVF) calculation by Chris Moody.
+    Aligned 1:1 with TradingView Pine Script (CM_WVF_V3_Ult).
     Detects market bottoms by measuring price volatility relative to its recent high.
     """
     d = df.copy()
+    if len(d) < max(lookback, bb_length, lb):
+        return d
     
-    # Williams Vix Fix Formula
-    # WVF = ((Highest Close in Period - Low) / Highest Close in Period) * 100
+    # 1. Williams Vix Fix Formula (Pine Script: highest(close, 22))
     d['Highest_Close'] = d['Close'].rolling(window=lookback).max()
     d['WVF'] = ((d['Highest_Close'] - d['Low']) / d['Highest_Close']) * 100
     
-    # Bollinger Bands on WVF
+    # 2. Bollinger Upper Band (Pine Script: ta.stdev uses population std)
     d['WVF_SMA'] = d['WVF'].rolling(window=bb_length).mean()
-    d['WVF_Std'] = d['WVF'].rolling(window=bb_length).std()
+    d['WVF_Std'] = d['WVF'].rolling(window=bb_length).std(ddof=0)
     d['WVF_Upper'] = d['WVF_SMA'] + (bb_mult * d['WVF_Std'])
     
-    # Percentile Threshold (Optional but common in WVF V3)
-    d['WVF_High_Range'] = d['WVF'].rolling(window=lookback).max() * percentile_high
+    # 3. Range High (Pine Script: highest(wvf, 50) * 0.85)
+    d['WVF_High_Range'] = d['WVF'].rolling(window=lb).max() * ph
     
-    # Detection Flags
+    # 4. Condition Logic
     d['Is_WVF_Spike'] = (d['WVF'] >= d['WVF_Upper']) | (d['WVF'] >= d['WVF_High_Range'])
     
-    # Enhanced WVF Bar Classification (TradingView Style)
+    # 5. Enhanced WVF Bar Classification (TradingView Style)
     d['Was_WVF_Spike_Prev'] = d['Is_WVF_Spike'].shift(1).fillna(False)
     d['HH_14'] = d['High'].rolling(14).max()
     d['HH_40'] = d['High'].rolling(40).max()
@@ -86,7 +88,7 @@ def calculate_wvf(df, lookback=22, bb_length=20, bb_mult=2.0, percentile_high=0.
 
     d['WVF_Status'] = d.apply(classify_wvf, axis=1)
     
-    # Refine Filtered Entry (Confirmed Buy)
+    # 6. Refine Filtered Entry (Confirmed Buy)
     # Filtered Entry: is_green == False AND was_green == True AND Close > Close.shift(3) AND (Close < HH14 OR Close < HH40)
     filtered_entry_cond = (
         (d['Is_WVF_Spike'] == False) & 
@@ -96,7 +98,7 @@ def calculate_wvf(df, lookback=22, bb_length=20, bb_mult=2.0, percentile_high=0.
     )
     d.loc[filtered_entry_cond, 'WVF_Status'] = '⭐ FILTERED_ENTRY'
     
-    return d.dropna()
+    return d
 
 def get_pre_breakout_scanner(df, breakout_threshold=0.05, lookback=5, mode='bullish'):
     """Improved Scanner: Multivariate DTW + Slope Filter + Z-score Normalization."""
