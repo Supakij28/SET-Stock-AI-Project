@@ -1346,10 +1346,10 @@ def get_stock_data(ticker, silent=False):
             
             # 2. Fallback to yfinance
             yf_ticker = yf.Ticker(clean_ticker)
-            df_yf = yf_ticker.history(period="2y")
+            df_yf = yf_ticker.history(period="2y", auto_adjust=True)
             
             if df_yf is None or df_yf.empty:
-                df_yf = yf_ticker.history(period="max")
+                df_yf = yf_ticker.history(period="max", auto_adjust=True)
                 
             if df_yf is not None and not df_yf.empty:
                 needed = ["Open", "High", "Low", "Close", "Volume"]
@@ -1382,7 +1382,7 @@ def get_stock_data(ticker, silent=False):
                 
     return None
 
-def batch_get_stock_data(tickers):
+def batch_get_stock_data(tickers, force_refresh=False):
     """
     Download multiple tickers in one go using yf.download to reduce API hits.
     Saves to disk cache for future use.
@@ -1394,14 +1394,17 @@ def batch_get_stock_data(tickers):
             ct = f"{ct}.BK"
         clean_tickers.append(ct)
     
-    # Filter out tickers already in disk cache
-    missing_tickers = [t for t in clean_tickers if get_disk_cache(t) is None]
+    # Filter out tickers already in disk cache (unless force_refresh is True)
+    if force_refresh:
+        missing_tickers = clean_tickers
+    else:
+        missing_tickers = [t for t in clean_tickers if get_disk_cache(t) is None]
     
     if missing_tickers:
         try:
             # Download missing tickers in one batch
             # Note: yf.download returns a MultiIndex if multiple tickers are passed
-            data = yf.download(missing_tickers, period="2y", group_by='ticker', threads=True, progress=False)
+            data = yf.download(missing_tickers, period="2y", group_by='ticker', threads=True, progress=False, auto_adjust=True)
             
             for t in missing_tickers:
                 try:
@@ -1793,7 +1796,8 @@ def run_set100_batch_scan(tickers, target_date=None):
     
     # NEW: Batch Download Price Data for all tickers to reduce API hits
     try:
-        all_data = batch_get_stock_data(tickers)
+        # Force refresh for manual batch scan to clear stale data/adjustment bugs
+        all_data = batch_get_stock_data(tickers, force_refresh=(target_date is None))
     except Exception as e:
         print(f"Batch data fetch failed: {e}")
         all_data = {}

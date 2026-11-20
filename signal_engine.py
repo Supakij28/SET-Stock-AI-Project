@@ -7,6 +7,50 @@ import pytz
 
 SET_TZ = pytz.timezone('Asia/Bangkok')
 
+def validate_and_normalize_price(ticker, df):
+    """
+    Validates historical OHLCV data against yfinance fast_info['lastPrice'].
+    If a significant discrepancy (>15%) is found, normalizes the historical data.
+    """
+    if df is None or df.empty:
+        return df
+    
+    try:
+        # 1. Get Live Price from yfinance fast_info
+        clean_ticker = ticker.strip().upper()
+        if not clean_ticker.endswith('.BK') and not clean_ticker.startswith('^'):
+            clean_ticker = f"{clean_ticker}.BK"
+            
+        t = yf.Ticker(clean_ticker)
+        # Try different live price attributes
+        live_price = t.fast_info.get('lastPrice') or t.fast_info.get('regularMarketPrice')
+        
+        if not live_price or live_price <= 0:
+            return df
+            
+        # 2. Compare with Last Historical Close
+        last_hist_close = df.iloc[-1]['Close']
+        discrepancy_pct = abs(live_price - last_hist_close) / last_hist_close
+        
+        # 3. If discrepancy > 15%, normalize historical data
+        if discrepancy_pct > 0.15:
+            # Check if trigger date is also stale (more than 3 days old)
+            last_date = df.index[-1]
+            days_diff = (datetime.now().date() - last_date.date()).days
+            
+            if days_diff > 3 or "BANPU" in clean_ticker: # Force for known bugged tickers
+                ratio = live_price / last_hist_close
+                cols_to_scale = ['Open', 'High', 'Low', 'Close']
+                df[cols_to_scale] = df[cols_to_scale] * ratio
+                # Volume scaling is not strictly necessary but keeps it proportional
+                # df['Volume'] = df['Volume'] / ratio 
+                
+                print(f"⚠️ Price Discrepancy detected for {ticker} ({discrepancy_pct:.2%}). Scaled by {ratio:.4f}")
+    except Exception as e:
+        print(f"Sanity check failed for {ticker}: {e}")
+        
+    return df
+
 def evaluate_daily_signals(ticker_data_dict, optimized_params_dict=None):
     """
     Evaluate all tickers for new entry signals and exit conditions for existing positions.
@@ -32,6 +76,9 @@ def evaluate_daily_signals(ticker_data_dict, optimized_params_dict=None):
         if df is None or len(df) < 200:
             continue
             
+        # --- DATA SANITY CHECK & NORMALIZATION ---
+        df = validate_and_normalize_price(ticker, df)
+        
         # Use optimized params if available, else default
         params = default_params.copy()
         if optimized_params_dict and ticker in optimized_params_dict:
