@@ -105,7 +105,13 @@ def evaluate_daily_signals(ticker_data_dict, optimized_params_dict=None):
         
         # Logging for verification (e.g., BANPU.BK)
         if "BANPU" in ticker.upper():
-            print(f"DEBUG [{ticker}]: WVF={last_row['WVF']:.2f}, Upper={last_row['WVF_Upper']:.2f}, RangeHigh={last_row['WVF_High_Range']:.2f}, Status={wvf_status}")
+            print(f"DEBUG [{ticker}] - {d.index[-1].strftime('%Y-%m-%d')}:")
+            print(f"  Close: {last_row['Close']:.2f}, Low: {last_row['Low']:.2f}, HighestClose22: {last_row['Highest_Close']:.2f}")
+            print(f"  WVF: {last_row['WVF']:.4f}")
+            print(f"  MidLine(SMA4): {last_row['WVF_SMA']:.4f}, UpperBand: {last_row['WVF_Upper']:.4f}")
+            print(f"  RangeHigh: {last_row['WVF_High_Range']:.4f}")
+            print(f"  Conditions: wvf >= UpperBand: {last_row['WVF'] >= last_row['WVF_Upper']}, wvf >= RangeHigh: {last_row['WVF'] >= last_row['WVF_High_Range']}")
+            print(f"  Final Status: {wvf_status}")
         
         # 1. EVALUATE ALL TICKERS (Signal at T Close -> Plan for T+1 Open)
         entry_price = last_row['Close'] 
