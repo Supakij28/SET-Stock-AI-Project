@@ -2424,23 +2424,15 @@ if main_category == "🎯 Trading & Daily Operations":
             st.caption("ออเดอร์ที่เตรียมเข้าซื้อที่ราคาเปิดในวันทำการถัดไป (Zero Look-Ahead Bias)")
             
             if not enriched_orders.empty:
-                # Add WVF Status Filter
-                wvf_filter_options = [
-                    "All WVF States (Show All)", 
-                    "Actionable Entries Only (Filtered & Reversal)", 
-                    "Active Green Climax", 
-                    "Normal (White/Gray)"
-                ]
-                selected_wvf_filter = st.radio("🔍 Filter WVF Bar Status", options=wvf_filter_options, horizontal=True)
-                
-                # Apply Filtering
-                if selected_wvf_filter == "Actionable Entries Only (Filtered & Reversal)":
-                    enriched_orders = enriched_orders[enriched_orders['WVF Bar Status'].isin(['⭐ FILTERED_ENTRY', '✅ REVERSAL_READY'])]
-                elif selected_wvf_filter == "Active Green Climax":
-                    enriched_orders = enriched_orders[enriched_orders['WVF Bar Status'] == '🟢 GREEN_CLIMAX']
-                elif selected_wvf_filter == "Normal (White/Gray)":
-                    enriched_orders = enriched_orders[enriched_orders['WVF Bar Status'] == '⚪ NORMAL']
-                
+                # SAFE COLUMN APPEND & FALLBACK for WVF Bar Status
+                if 'WVF Bar Status' not in enriched_orders.columns:
+                    if 'wvf_status' in enriched_orders.columns:
+                        enriched_orders['WVF Bar Status'] = enriched_orders['wvf_status'].fillna('⚪ NORMAL')
+                    else:
+                        enriched_orders['WVF Bar Status'] = '⚪ NORMAL'
+                else:
+                    enriched_orders['WVF Bar Status'] = enriched_orders['WVF Bar Status'].fillna('⚪ NORMAL')
+
                 # Apply Sorting Priority
                 wvf_priority = {
                     '⭐ FILTERED_ENTRY': 1,
@@ -2455,10 +2447,11 @@ if main_category == "🎯 Trading & Daily Operations":
                 # Remove internal normalization column for clean display
                 display_cols = [c for c in enriched_orders.columns if c not in ['Ticker_Norm', 'WVF_Priority']]
                 
-                # Reorder columns to put Ticker and WVF Bar Status first
-                core_cols = ['Ticker', 'WVF Bar Status']
-                other_cols = [c for c in display_cols if c not in core_cols]
-                display_cols = core_cols + other_cols
+                # Reorder columns to put Ticker first and WVF Bar Status last
+                core_first = ['Ticker']
+                core_last = ['WVF Bar Status']
+                other_cols = [c for c in display_cols if c not in core_first + core_last]
+                display_cols = core_first + other_cols + core_last
                 
                 # Show the signals table with institutional formatting
                 formatted_entry_df = enriched_orders[display_cols].style.format({
