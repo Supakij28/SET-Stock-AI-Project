@@ -66,6 +66,36 @@ def calculate_wvf(df, lookback=22, bb_length=20, bb_mult=2.0, percentile_high=0.
     # Detection Flags
     d['Is_WVF_Spike'] = (d['WVF'] >= d['WVF_Upper']) | (d['WVF'] >= d['WVF_High_Range'])
     
+    # Enhanced WVF Bar Classification (TradingView Style)
+    d['Was_WVF_Spike_Prev'] = d['Is_WVF_Spike'].shift(1).fillna(False)
+    d['HH_14'] = d['High'].rolling(14).max()
+    d['HH_40'] = d['High'].rolling(40).max()
+    
+    def classify_wvf(row):
+        is_green = row['Is_WVF_Spike']
+        was_green = row['Was_WVF_Spike_Prev']
+        
+        if is_green:
+            return '🟢 GREEN_CLIMAX'
+        
+        if was_green:
+            # Reversal Ready is the default when was_green and not is_green
+            return '✅ REVERSAL_READY'
+        
+        return '⚪ NORMAL'
+
+    d['WVF_Status'] = d.apply(classify_wvf, axis=1)
+    
+    # Refine Filtered Entry (Confirmed Buy)
+    # Filtered Entry: is_green == False AND was_green == True AND Close > Close.shift(3) AND (Close < HH14 OR Close < HH40)
+    filtered_entry_cond = (
+        (d['Is_WVF_Spike'] == False) & 
+        (d['Was_WVF_Spike_Prev'] == True) & 
+        (d['Close'] > d['Close'].shift(3)) & 
+        ((d['Close'] < d['HH_14']) | (d['Close'] < d['HH_40']))
+    )
+    d.loc[filtered_entry_cond, 'WVF_Status'] = '⭐ FILTERED_ENTRY'
+    
     return d.dropna()
 
 def get_pre_breakout_scanner(df, breakout_threshold=0.05, lookback=5, mode='bullish'):
@@ -516,6 +546,10 @@ def core_strategy_scanner(ticker, df_raw, target_date=None, mtf_check=True):
     atr_avg5 = df['ATR_Avg_5'].iloc[-1]
     high_vol = atr_now > (atr_avg5 * 1.2)
     
+    # 8.5 WVF Bar Classification
+    wvf_df = calculate_wvf(df_raw)
+    wvf_status = wvf_df['WVF_Status'].iloc[-1] if not wvf_df.empty else '⚪ NORMAL'
+    
     # 9. Signal Logic V7
     score_diff = bull_score - bear_score
     is_pre_fly = 12.0 <= score_diff <= 22.0
@@ -586,5 +620,6 @@ def core_strategy_scanner(ticker, df_raw, target_date=None, mtf_check=True):
         'high_vol': high_vol,
         'bull_jump': bull_jump,
         'bear_jump': bear_jump,
-        'score_velocity': score_velocity
+        'score_velocity': score_velocity,
+        'wvf_status': wvf_status
     }

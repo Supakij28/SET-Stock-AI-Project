@@ -576,6 +576,7 @@ def save_scan_result(data):
         if 'mtf_status' in data: payload['mtf_status'] = clean_val(data['mtf_status'])
         if 'mtf_score' in data: payload['mtf_score'] = clean_val(data['mtf_score'])
         if 'conviction_score' in data: payload['conviction_score'] = clean_val(data['conviction_score'])
+        if 'wvf_status' in data: payload['wvf_status'] = clean_val(data['wvf_status'])
         if 'outcome_label' in data: payload['outcome_label'] = clean_val(data['outcome_label'])
         if 'outcome_pct' in data: payload['outcome_pct'] = clean_val(data['outcome_pct'])
         if 'verified_date' in data: payload['verified_date'] = clean_val(data['verified_date'])
@@ -1859,6 +1860,7 @@ def run_set100_batch_scan(tickers, target_date=None):
                 bull_jump = scan_res['bull_jump']
                 bear_jump = scan_res['bear_jump']
                 score_velocity = scan_res['score_velocity']
+                wvf_status = scan_res['wvf_status']
                 
                 if pct_change > 0: pos_count += 1
                 elif pct_change < 0: neg_count += 1
@@ -1932,6 +1934,7 @@ def run_set100_batch_scan(tickers, target_date=None):
                         'Max DD (3D)': f"{max_dd:+.1f}%",
                         'RSI': rsi_curr,
                         'Score Velocity': score_velocity,
+                        'WVF Bar Status': wvf_status,
                         'm_regime': m_regime,
                         'perf_stats': perf_stats,
                         'db_date': db_date,
@@ -2019,6 +2022,7 @@ def run_set100_batch_scan(tickers, target_date=None):
                 'mtf_status': row['MTF Conf'],
                 'mtf_score': row['MTF Score'],
                 'conviction_score': conviction_score,
+                'wvf_status': row['WVF Bar Status'],
                 'sector_rs': srs_val # Optional: add to DB if schema supports
             }
             db_data.update(row['outcome_data'])
@@ -2420,9 +2424,41 @@ if main_category == "🎯 Trading & Daily Operations":
             st.caption("ออเดอร์ที่เตรียมเข้าซื้อที่ราคาเปิดในวันทำการถัดไป (Zero Look-Ahead Bias)")
             
             if not enriched_orders.empty:
+                # Add WVF Status Filter
+                wvf_filter_options = [
+                    "All WVF States (Show All)", 
+                    "Actionable Entries Only (Filtered & Reversal)", 
+                    "Active Green Climax", 
+                    "Normal (White/Gray)"
+                ]
+                selected_wvf_filter = st.radio("🔍 Filter WVF Bar Status", options=wvf_filter_options, horizontal=True)
+                
+                # Apply Filtering
+                if selected_wvf_filter == "Actionable Entries Only (Filtered & Reversal)":
+                    enriched_orders = enriched_orders[enriched_orders['WVF Bar Status'].isin(['⭐ FILTERED_ENTRY', '✅ REVERSAL_READY'])]
+                elif selected_wvf_filter == "Active Green Climax":
+                    enriched_orders = enriched_orders[enriched_orders['WVF Bar Status'] == '🟢 GREEN_CLIMAX']
+                elif selected_wvf_filter == "Normal (White/Gray)":
+                    enriched_orders = enriched_orders[enriched_orders['WVF Bar Status'] == '⚪ NORMAL']
+                
+                # Apply Sorting Priority
+                wvf_priority = {
+                    '⭐ FILTERED_ENTRY': 1,
+                    '✅ REVERSAL_READY': 2,
+                    '🟢 GREEN_CLIMAX': 3,
+                    '⚪ NORMAL': 4
+                }
+                enriched_orders['WVF_Priority'] = enriched_orders['WVF Bar Status'].map(wvf_priority).fillna(5)
+                enriched_orders = enriched_orders.sort_values(by=['WVF_Priority', 'Ticker'])
+                
                 # Display Enriched Table (Left Joined with Oversold Scanner)
                 # Remove internal normalization column for clean display
-                display_cols = [c for c in enriched_orders.columns if c != 'Ticker_Norm']
+                display_cols = [c for c in enriched_orders.columns if c not in ['Ticker_Norm', 'WVF_Priority']]
+                
+                # Reorder columns to put Ticker and WVF Bar Status first
+                core_cols = ['Ticker', 'WVF Bar Status']
+                other_cols = [c for c in display_cols if c not in core_cols]
+                display_cols = core_cols + other_cols
                 
                 # Show the signals table with institutional formatting
                 formatted_entry_df = enriched_orders[display_cols].style.format({
@@ -2653,6 +2689,7 @@ if main_category == "🎯 Trading & Daily Operations":
                         # Safe Column Selection
                         u_cols = {
                             'Ticker': 'Ticker', 
+                            'WVF Bar Status': 'WVF Bar Status',
                             'Conviction_Score': 'Score', 
                             'Signal': 'Signal', 
                             'Strategy': 'Strategy', 
@@ -2745,9 +2782,10 @@ if main_category == "🎯 Trading & Daily Operations":
                     
                     st.divider()
                     st.subheader("📋 ตารางสรุปหุ้น Oversold (Summary Table)")
-                    summary_cols = ['ticker', 'rsi', 'close_price', 'signal', 'strategy', 'source', 'scanned_at']
-                    st.dataframe(oversold_df[summary_cols].rename(columns={
+                    summary_cols = ['ticker', 'wvf_status', 'rsi', 'close_price', 'signal', 'strategy', 'source', 'scanned_at']
+                    st.dataframe(oversold_df[[c for c in summary_cols if c in oversold_df.columns]].rename(columns={
                         'ticker': 'Ticker',
+                        'wvf_status': 'WVF Status',
                         'rsi': 'RSI',
                         'close_price': 'Price',
                         'signal': 'Signal',

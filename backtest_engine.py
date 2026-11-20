@@ -22,6 +22,38 @@ def calculate_indicators(df, lookback=22, bb_length=20, bb_mult=2.0, percentile_
     
     d['Is_WVF_Spike'] = (d['WVF'] >= d['WVF_Upper']) | (d['WVF'] >= d['WVF_High_Range'])
     
+    # Enhanced WVF Bar Classification
+    d['Was_WVF_Spike_Prev'] = d['Is_WVF_Spike'].shift(1).fillna(False)
+    d['HH_14'] = d['High'].rolling(14).max()
+    d['HH_40'] = d['High'].rolling(40).max()
+    
+    def classify_wvf(row):
+        is_green = row['Is_WVF_Spike']
+        was_green = row['Was_WVF_Spike_Prev']
+        close = row['Close']
+        
+        if is_green:
+            return '🟢 GREEN_CLIMAX'
+        
+        if was_green:
+            # Check for Reversal Strength (Filtered Entry)
+            # Need Close.shift(3), but in row-by-row apply we don't have it easily
+            # We'll handle Filtered Entry in a vectorized way after this
+            return '✅ REVERSAL_READY'
+        
+        return '⚪ NORMAL'
+
+    d['WVF_Status'] = d.apply(classify_wvf, axis=1)
+    
+    # Refine Filtered Entry using vectorized operations for performance and access to shifts
+    filtered_entry_cond = (
+        (d['Is_WVF_Spike'] == False) & 
+        (d['Was_WVF_Spike_Prev'] == True) & 
+        (d['Close'] > d['Close'].shift(3)) & 
+        ((d['Close'] < d['HH_14']) | (d['Close'] < d['HH_40']))
+    )
+    d.loc[filtered_entry_cond, 'WVF_Status'] = '⭐ FILTERED_ENTRY'
+    
     # Trend Filter
     d['EMA_Trend'] = d['Close'].ewm(span=ema_period, adjust=False).mean()
     

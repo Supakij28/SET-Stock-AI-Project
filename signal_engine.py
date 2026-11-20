@@ -100,34 +100,33 @@ def evaluate_daily_signals(ticker_data_dict, optimized_params_dict=None):
         
         last_row = d.iloc[-1]
         
-        # 1. NEW ENTRY SIGNAL (Evaluate at T Close -> Plan for T+1 Open)
-        # Condition: WVF Spike AND (Optional) Price > EMA 200
-        if last_row.get('Is_WVF_Spike', False):
-            trend_ok = True
-            if params.get('use_trend_filter'):
-                trend_ok = last_row['Close'] > last_row['EMA_Trend']
-            
-            if trend_ok:
-                # Zero Look-Ahead Bias: Signal at T Close, Entry at T+1 Open
-                # We use T Close as an estimate for T+1 Open in the plan
-                entry_price = last_row['Close'] 
-                sl_pct = params.get('stop_loss', 0.03)
-                tp_pct = params.get('take_profit', 0.08)
-                
-                new_entries.append({
-                    'Ticker': ticker,
-                    'Signal Type': 'WVF Bottom Climax',
-                    'Trigger Date': d.index[-1].strftime('%Y-%m-%d'),
-                    'Calculated Entry Price (Open)': round(entry_price, 2),
-                    'Dynamic Stop Loss': round(entry_price * (1 - sl_pct), 2),
-                    'Dynamic Take Profit': round(entry_price * (1 + tp_pct), 2),
-                    'R:R Ratio': round(tp_pct / sl_pct, 2) if sl_pct > 0 else 0
-                })
+        # Enhanced Classification from backtest_engine
+        wvf_status = last_row.get('WVF_Status', '⚪ NORMAL')
+        
+        # 1. EVALUATE ALL TICKERS (Signal at T Close -> Plan for T+1 Open)
+        entry_price = last_row['Close'] 
+        sl_pct = params.get('stop_loss', 0.03)
+        tp_pct = params.get('take_profit', 0.08)
+        
+        # Trend Filter check (still useful for scoring or filtering)
+        trend_ok = last_row['Close'] > last_row['EMA_Trend'] if params.get('use_trend_filter') else True
+        
+        new_entries.append({
+            'Ticker': ticker,
+            'Signal Type': 'WVF Scanner',
+            'WVF Bar Status': wvf_status,
+            'Trend': 'UP' if trend_ok else 'DOWN',
+            'Trigger Date': d.index[-1].strftime('%Y-%m-%d'),
+            'Calculated Entry Price (Open)': round(entry_price, 2),
+            'Dynamic Stop Loss': round(entry_price * (1 - sl_pct), 2),
+            'Dynamic Take Profit': round(entry_price * (1 + tp_pct), 2),
+            'R:R Ratio': round(tp_pct / sl_pct, 2) if sl_pct > 0 else 0
+        })
         
     return {
         'new_entries': pd.DataFrame(new_entries),
         'summary': {
-            'new_buy_signals': len(new_entries),
+            'new_buy_signals': len([e for e in new_entries if 'ENTRY' in e['WVF Bar Status']]),
             'active_positions': 0, # To be handled by UI/DB
             'tp_sl_reached': 0     # To be handled by UI/DB
         }
