@@ -2365,6 +2365,11 @@ if main_category == "🎯 Trading & Daily Operations":
                 active_pos_df = st.session_state['active_positions']
                 exit_control_df = signal_engine.check_active_positions(active_pos_df, all_data, optimized_params_dict=optimized_params)
                 
+                # Log specific ticker data to console for verification
+                banpu_row = entry_orders_df[entry_orders_df['Ticker'].str.contains('BANPU', case=False, na=False)]
+                if not banpu_row.empty:
+                    print(f"DEBUG Dashboard [BANPU.BK]: WVF Status from Signal Engine: {banpu_row['WVF Bar Status'].values[0]}")
+                
                 # --- Enrichment & Filtering Logic (Left Join with Oversold Scanner) ---
                 enriched_orders = pd.DataFrame()
                 if not entry_orders_df.empty:
@@ -2440,6 +2445,8 @@ if main_category == "🎯 Trading & Daily Operations":
                     '🟢 GREEN_CLIMAX': 3,
                     '⚪ NORMAL': 4
                 }
+                
+                # Ensure all states are in the priority map
                 enriched_orders['WVF_Priority'] = enriched_orders['WVF Bar Status'].map(wvf_priority).fillna(5)
                 enriched_orders = enriched_orders.sort_values(by=['WVF_Priority', 'Ticker'])
                 

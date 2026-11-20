@@ -103,6 +103,10 @@ def evaluate_daily_signals(ticker_data_dict, optimized_params_dict=None):
         # Enhanced Classification from backtest_engine
         wvf_status = last_row.get('WVF_Status', '⚪ NORMAL')
         
+        # Logging for verification (e.g., BANPU.BK)
+        if "BANPU" in ticker.upper():
+            print(f"DEBUG [{ticker}]: WVF={last_row['WVF']:.2f}, Upper={last_row['WVF_Upper']:.2f}, RangeHigh={last_row['WVF_High_Range']:.2f}, Status={wvf_status}")
+        
         # 1. EVALUATE ALL TICKERS (Signal at T Close -> Plan for T+1 Open)
         entry_price = last_row['Close'] 
         sl_pct = params.get('stop_loss', 0.03)

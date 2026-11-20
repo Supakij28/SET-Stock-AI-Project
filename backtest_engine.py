@@ -3,64 +3,24 @@ import numpy as np
 from datetime import datetime
 import itertools
 
+import scanner_engine
+
 def calculate_indicators(df, lookback=22, bb_length=4, bb_mult=2.0, lb=50, ph=0.85, ema_period=200):
     """
     Calculate WVF, EMA, and ATR for filtering and exits.
     Aligned 1:1 with TradingView Pine Script (CM_WVF_V3_Ult).
+    Calls unified logic from scanner_engine.
     """
-    d = df.copy()
-    if len(d) < max(lookback, bb_length, lb, ema_period):
+    # Use unified WVF logic from scanner_engine
+    d = scanner_engine.calculate_wvf(df, lookback=lookback, bb_length=bb_length, bb_mult=bb_mult, lb=lb, ph=ph)
+    
+    if len(d) < ema_period:
         return d
         
-    # 1. Williams Vix Fix Formula (Pine Script: highest(close, 22))
-    d['Highest_Close'] = d['Close'].rolling(window=lookback).max()
-    d['WVF'] = ((d['Highest_Close'] - d['Low']) / d['Highest_Close']) * 100
-    
-    # 2. Bollinger Upper Band (Pine Script: ta.stdev uses population std)
-    d['WVF_SMA'] = d['WVF'].rolling(window=bb_length).mean()
-    d['WVF_Std'] = d['WVF'].rolling(window=bb_length).std(ddof=0)
-    d['WVF_Upper'] = d['WVF_SMA'] + (bb_mult * d['WVF_Std'])
-    
-    # 3. Range High (Pine Script: highest(wvf, 50) * 0.85)
-    d['WVF_High_Range'] = d['WVF'].rolling(window=lb).max() * ph
-    
-    # 4. Condition Logic
-    d['Is_WVF_Spike'] = (d['WVF'] >= d['WVF_Upper']) | (d['WVF'] >= d['WVF_High_Range'])
-    
-    # 5. Enhanced WVF Bar Classification (TradingView Style)
-    d['Was_WVF_Spike_Prev'] = d['Is_WVF_Spike'].shift(1).fillna(False)
-    d['HH_14'] = d['High'].rolling(14).max()
-    d['HH_40'] = d['High'].rolling(40).max()
-    
-    def classify_wvf(row):
-        is_green = row['Is_WVF_Spike']
-        was_green = row['Was_WVF_Spike_Prev']
-        
-        if is_green:
-            return '🟢 GREEN_CLIMAX'
-        
-        if was_green:
-            # Reversal Ready is the default when was_green and not is_green
-            return '✅ REVERSAL_READY'
-        
-        return '⚪ NORMAL'
-
-    d['WVF_Status'] = d.apply(classify_wvf, axis=1)
-    
-    # 6. Refine Filtered Entry (Confirmed Buy)
-    # Filtered Entry: is_green == False AND was_green == True AND Close > Close.shift(3) AND (Close < HH14 OR Close < HH40)
-    filtered_entry_cond = (
-        (d['Is_WVF_Spike'] == False) & 
-        (d['Was_WVF_Spike_Prev'] == True) & 
-        (d['Close'] > d['Close'].shift(3)) & 
-        ((d['Close'] < d['HH_14']) | (d['Close'] < d['HH_40']))
-    )
-    d.loc[filtered_entry_cond, 'WVF_Status'] = '⭐ FILTERED_ENTRY'
-    
-    # Trend Filter
+    # 7. Trend Filter
     d['EMA_Trend'] = d['Close'].ewm(span=ema_period, adjust=False).mean()
     
-    # ATR for Trailing Stop
+    # 8. ATR for Trailing Stop
     high_low = d['High'] - d['Low']
     high_close = (d['High'] - d['Close'].shift()).abs()
     low_close = (d['Low'] - d['Close'].shift()).abs()
@@ -68,7 +28,7 @@ def calculate_indicators(df, lookback=22, bb_length=4, bb_mult=2.0, lb=50, ph=0.
     true_range = ranges.max(axis=1)
     d['ATR'] = true_range.rolling(14).mean()
     
-    # Bollinger Bands for Price Exit
+    # 9. Bollinger Bands for Price Exit
     d['Price_SMA'] = d['Close'].rolling(window=20).mean()
     d['Price_Std'] = d['Close'].rolling(window=20).std()
     d['Price_Upper_BB'] = d['Price_SMA'] + (2.0 * d['Price_Std'])
