@@ -205,10 +205,16 @@ def check_active_positions(positions_df, ticker_data_dict, optimized_params_dict
         # SAFETY GUARD: If live price fetching fails, fallback to entry_price 
         # to ensure the order is NOT hidden from the dashboard.
         is_stale = False
-        if current_price <= 0.0:
-            current_price = entry_price
+        if current_price is None or current_price <= 0.0:
+            current_price = float(entry_price)
             is_stale = True
             print(f"⚠️ Falling back to entry_price for {ticker} due to fetch error.")
+        else:
+            # Ensure it's a float for calculations
+            current_price = float(current_price)
+            
+        # Ensure entry_price is float (sometimes Decimal from Supabase)
+        entry_price = float(entry_price)
             
         params = default_params.copy()
         if optimized_params_dict and ticker in optimized_params_dict:
