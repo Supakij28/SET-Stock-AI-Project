@@ -173,7 +173,9 @@ def get_robust_live_price(ticker):
             return last_close
             
     except Exception as e:
-        print(f"Error fetching robust price for {ticker}: {e}")
+        import traceback
+        print(f"❌ Error fetching robust price for {ticker}: {e}")
+        traceback.print_exc()
         
     return 0.0
 
@@ -190,6 +192,9 @@ def check_active_positions(positions_df, ticker_data_dict, optimized_params_dict
         'exit_type': 'StopLoss_TakeProfit'
     }
     
+    if positions_df is None or positions_df.empty:
+        return pd.DataFrame(columns=['Ticker', 'Entry Price', 'Current Price', 'Current PnL %', 'Target TP', 'Target SL', 'Action Required'])
+
     for _, pos in positions_df.iterrows():
         ticker = pos['ticker']
         entry_price = pos['entry_price']
@@ -197,8 +202,13 @@ def check_active_positions(positions_df, ticker_data_dict, optimized_params_dict
         # Robust price fetching
         current_price = get_robust_live_price(ticker)
             
+        # SAFETY GUARD: If live price fetching fails, fallback to entry_price 
+        # to ensure the order is NOT hidden from the dashboard.
+        is_stale = False
         if current_price <= 0.0:
-            continue
+            current_price = entry_price
+            is_stale = True
+            print(f"⚠️ Falling back to entry_price for {ticker} due to fetch error.")
             
         params = default_params.copy()
         if optimized_params_dict and ticker in optimized_params_dict:
@@ -210,10 +220,13 @@ def check_active_positions(positions_df, ticker_data_dict, optimized_params_dict
         target_sl = entry_price * (1 - params.get('stop_loss', 0.03))
         
         action = "HOLD"
-        if current_price >= target_tp:
-            action = "SELL AT OPEN (TP)"
-        elif current_price <= target_sl:
-            action = "SELL AT OPEN (SL)"
+        if not is_stale:
+            if current_price >= target_tp:
+                action = "SELL AT OPEN (TP)"
+            elif current_price <= target_sl:
+                action = "SELL AT OPEN (SL)"
+        else:
+            action = "FETCH ERROR (HOLD)"
             
         results.append({
             'Ticker': ticker,
