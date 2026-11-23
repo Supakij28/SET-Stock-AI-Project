@@ -1,5 +1,12 @@
 import streamlit as st
+import os
+import tempfile
 import yfinance as yf
+
+# Fix for yfinance cache error on Streamlit Cloud
+_yf_cache_dir = os.path.join(tempfile.gettempdir(), "yf_tz_cache")
+os.makedirs(_yf_cache_dir, exist_ok=True)
+yf.set_tz_cache_location(_yf_cache_dir)
 import yahooquery as yq
 import pandas as pd
 import numpy as np
