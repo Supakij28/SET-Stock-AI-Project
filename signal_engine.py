@@ -132,6 +132,51 @@ def evaluate_daily_signals(ticker_data_dict, optimized_params_dict=None):
         }
     }
 
+def get_robust_live_price(ticker):
+    """
+    Fetches a reliable live price for a ticker using multiple methods and sanity checks.
+    1. Try Intraday 5m history (most reliable).
+    2. Try Daily history (fallback).
+    3. Try fast_info with sanity check against history.
+    """
+    clean_ticker = ticker.strip().upper()
+    if not clean_ticker.endswith('.BK') and not clean_ticker.startswith('^'):
+        clean_ticker = f"{clean_ticker}.BK"
+        
+    try:
+        t = yf.Ticker(clean_ticker)
+        
+        # Method 1: Intraday 5m (Last bar with volume)
+        hist_intraday = t.history(period="1d", interval="5m", auto_adjust=False)
+        if not hist_intraday.empty:
+            valid_bars = hist_intraday[hist_intraday['Volume'] > 0]
+            if not valid_bars.empty:
+                return valid_bars['Close'].iloc[-1]
+        
+        # Method 2: Daily History (Last 5 days to ensure we get a close)
+        hist_daily = t.history(period="5d", interval="1d", auto_adjust=False)
+        if not hist_daily.empty:
+            last_close = hist_daily['Close'].iloc[-1]
+            
+            # Method 3: fast_info with Sanity Check
+            # fast_info can be bugged for adjusted tickers (like BANPU 14.60 vs 13.25)
+            fast_price = t.fast_info.get('lastPrice') or t.fast_info.get('regularMarketPrice')
+            
+            if fast_price and fast_price > 0:
+                # Check discrepancy between fast_info and history close
+                # If difference > 5%, reject fast_info and use history
+                if abs(fast_price - last_close) / last_close > 0.05:
+                    print(f"⚠️ Rejected fast_info price ({fast_price}) for {clean_ticker}. Using history close ({last_close})")
+                    return last_close
+                return fast_price
+            
+            return last_close
+            
+    except Exception as e:
+        print(f"Error fetching robust price for {ticker}: {e}")
+        
+    return 0.0
+
 def check_active_positions(positions_df, ticker_data_dict, optimized_params_dict=None):
     """
     Check active positions against their SL/TP or other exit criteria.
@@ -149,28 +194,10 @@ def check_active_positions(positions_df, ticker_data_dict, optimized_params_dict
         ticker = pos['ticker']
         entry_price = pos['entry_price']
         
-        # Ensure ticker format is correct for yfinance
-        clean_ticker = ticker.strip().upper()
-        if not clean_ticker.endswith('.BK') and not clean_ticker.startswith('^'):
-            clean_ticker = f"{clean_ticker}.BK"
-        
-        current_price = 0.0
-        
-        # 1. Try to get live price from ticker_data_dict (Batch data)
-        if clean_ticker in ticker_data_dict:
-            df = ticker_data_dict[clean_ticker]
-            if df is not None and not df.empty:
-                current_price = df.iloc[-1]['Close']
-        
-        # 2. If price seems stale or not in dict, try yfinance fast_info for REAL-TIME
-        if current_price == 0.0:
-            try:
-                t = yf.Ticker(clean_ticker)
-                current_price = t.fast_info['lastPrice']
-            except:
-                pass
+        # Robust price fetching
+        current_price = get_robust_live_price(ticker)
             
-        if current_price == 0.0:
+        if current_price <= 0.0:
             continue
             
         params = default_params.copy()
