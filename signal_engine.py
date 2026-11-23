@@ -146,6 +146,16 @@ def get_robust_live_price(ticker):
     2. Try Daily history (fallback).
     3. Try fast_info with sanity check against history.
     """
+    # [POTETO PROTECT] Force yfinance cache location to prevent NoneType TypeError on Streamlit Cloud
+    _cache_dir = os.path.join(tempfile.gettempdir(), "yf_tz_cache")
+    os.makedirs(_cache_dir, exist_ok=True)
+    try:
+        if getattr(yf.cache._TzDBManager, "_cache_dir", None) is None:
+            yf.cache._TzDBManager._cache_dir = _cache_dir
+        yf.set_tz_cache_location(_cache_dir)
+    except Exception:
+        pass
+
     clean_ticker = ticker.strip().upper()
     if not clean_ticker.endswith('.BK') and not clean_ticker.startswith('^'):
         clean_ticker = f"{clean_ticker}.BK"
@@ -158,18 +168,19 @@ def get_robust_live_price(ticker):
         if not hist_intraday.empty:
             valid_bars = hist_intraday[hist_intraday['Volume'] > 0]
             if not valid_bars.empty:
-                return valid_bars['Close'].iloc[-1]
+                return float(valid_bars['Close'].iloc[-1])
         
         # Method 2: Daily History (Last 5 days to ensure we get a close)
         hist_daily = t.history(period="5d", interval="1d", auto_adjust=False)
         if not hist_daily.empty:
-            last_close = hist_daily['Close'].iloc[-1]
+            last_close = float(hist_daily['Close'].iloc[-1])
             
             # Method 3: fast_info with Sanity Check
             # fast_info can be bugged for adjusted tickers (like BANPU 14.60 vs 13.25)
             fast_price = t.fast_info.get('lastPrice') or t.fast_info.get('regularMarketPrice')
             
             if fast_price and fast_price > 0:
+                fast_price = float(fast_price)
                 # Check discrepancy between fast_info and history close
                 # If difference > 5%, reject fast_info and use history
                 if abs(fast_price - last_close) / last_close > 0.05:
@@ -180,9 +191,19 @@ def get_robust_live_price(ticker):
             return last_close
             
     except Exception as e:
-        import traceback
-        print(f"❌ Error fetching robust price for {ticker}: {e}")
-        traceback.print_exc()
+        print(f"⚠️ yf.Ticker error for {ticker}: {e}. Trying yf.download fallback...")
+        try:
+            # Fallback Method 4: yf.download (often bypasses cache issues in some yf versions)
+            df_dl = yf.download(clean_ticker, period="5d", interval="1d", progress=False, auto_adjust=False)
+            if not df_dl.empty:
+                # Handle potential MultiIndex columns
+                if isinstance(df_dl.columns, pd.MultiIndex):
+                    if 'Close' in df_dl.columns.levels[0]:
+                        return float(df_dl['Close'][clean_ticker].iloc[-1])
+                elif 'Close' in df_dl.columns:
+                    return float(df_dl['Close'].iloc[-1])
+        except Exception as dl_e:
+            print(f"❌ Fallback download failed for {ticker}: {dl_e}")
         
     return 0.0
 
