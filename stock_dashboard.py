@@ -2932,7 +2932,8 @@ elif main_category == "🌋 Market Insights & Analytics":
                     status_text.text(f"Scanning {ticker}...")
                     df_wvf = get_stock_data(ticker)
                     if df_wvf is not None and len(df_wvf) > wvf_lookback:
-                        df_wvf = calculate_wvf(df_wvf, wvf_lookback, wvf_bb_len, wvf_bb_mult, wvf_percentile)
+                        # Use keyword arguments to ensure parameters match calculate_wvf signature
+                        df_wvf = calculate_wvf(df_wvf, lookback=int(wvf_lookback), bb_length=int(wvf_bb_len), bb_mult=wvf_bb_mult, ph=wvf_percentile)
                         
                         if wvf_target_date:
                             target_dt = pd.to_datetime(wvf_target_date).date()
@@ -2990,7 +2991,8 @@ elif main_category == "🌋 Market Insights & Analytics":
                 with st.spinner(f"Loading {selected_wvf_ticker} chart..."):
                     df_chart = get_stock_data(selected_wvf_ticker)
                     if df_chart is not None and len(df_chart) > wvf_lookback:
-                        df_chart = calculate_wvf(df_chart, wvf_lookback, wvf_bb_len, wvf_bb_mult, wvf_percentile)
+                        # Use keyword arguments to ensure parameters match calculate_wvf signature
+                        df_chart = calculate_wvf(df_chart, lookback=int(wvf_lookback), bb_length=int(wvf_bb_len), bb_mult=wvf_bb_mult, ph=wvf_percentile)
                         
                         # Spike First Trigger Logic
                         df_chart['Is_WVF_First_Trigger'] = False

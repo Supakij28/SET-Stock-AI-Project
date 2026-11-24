@@ -50,6 +50,12 @@ def calculate_wvf(df, lookback=22, bb_length=4, bb_mult=2.0, lb=50, ph=0.85):
     Detects market bottoms by measuring price volatility relative to its recent high.
     """
     d = df.copy()
+    
+    # [POTETO PROTECT] Ensure window parameters are integers and at least 1
+    lookback = max(1, int(lookback))
+    bb_length = max(1, int(bb_length))
+    lb = max(1, int(lb))
+    
     if len(d) < max(lookback, bb_length, lb):
         return d
     
